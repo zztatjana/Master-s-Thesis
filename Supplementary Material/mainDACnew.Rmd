@@ -1,0 +1,2833 @@
+---
+Code for Master's Thesis: "Analyzing Technology Diffusion Pathways for the Deployment of Direct Air Capture in Meeting Global Climate Targets"
+
+Author: "Tatjana Zurbriggen (modified Code-Version of Odenweller et al. (2022))"
+---
+
+# Setup
+```{r setup, warning = FALSE}
+options(repos = c(CRAN = "@CRAN@", pik = "https://rse.pik-potsdam.de/r/packages"))
+install.packages("quitte")
+install.packages("minpack.lm")
+install.packages("openxlsx")
+
+library(tidyverse)  # Data handling
+library(quitte)  # Data handling
+library(readxl)  # Reading excel files
+library(ggplot2)  # Plotting
+library(cowplot)  # Plotting layout
+library(ggnewscale)  # Multiple legends
+library(ggExtra)  # Marginal distributions
+library(ggsci)  # Colour palettes
+library(scales)  # Plotting axes
+library(zoo)  # Function na.approx
+library(ggforce)  # Function facet_zoom
+library(colorspace)  # Colour manipulation40
+library(minpack.lm) # Modelling
+library(openxlsx) #Save as Excel
+library(nleqslv)  # Solving non-linear systems of equations
+library(truncnorm)  # Truncated normal distribution
+library(lubridate)  # Working with dates
+library(dbplyr) #Data handling
+
+# Input data folder
+path.input <- "01_input_data_new/"
+# Output folder
+path.output <- "02_output_plots_new/"
+# Helper functions folder
+path.helpers <- "03_helpers_new/"
+# Plotting functions folder
+path.plotting <- "04_plotting_new/"
+
+# Source helper functions
+source(paste0(path.helpers, "ReadDACProjectsDB.R"))
+source(paste0(path.helpers, "ReadBPDB23.R"))
+source(paste0(path.helpers, "calcTruncNormParam.R"))
+source(paste0(path.helpers, "calcMonteCarloSample.R"))
+source(paste0(path.helpers, "calcTechnologyDiffusion.R"))
+
+# Source plotting functions
+source(paste0(path.plotting, "plotDACProjects.R"))
+source(paste0(path.plotting, "plotIllustration.R"))
+source(paste0(path.plotting, "plotParameterDistributions.R"))
+source(paste0(path.plotting, "plotProbabilisticFeasibilitySpace.R"))
+
+
+#  Simulation mode: 
+model.mode <- "simulation"
+
+# Sample size
+n <- 1000
+# Minimum annual growth rate
+bmin <- 0.15 #lower truncation of 15% per year
+
+# For plotting
+t.split <- 2025
+t.min <- 2010
+t.max <- 2050
+
+# Set plotting style
+font.size <- 6
+theme_set(theme_cowplot(font_size = font.size))
+color.pv <- "#ffb200"
+color.wind <- "#215CAF"
+
+# Quantile calculation. (i guess for extended data fig. 8)
+quibble <- function(x, q = c(0.25, 0.33, 0.5, 0.66, 0.75)) {
+  tibble(x = quantile(x, q), q = q)
+}
+
+# Regions
+region.mapping.eu <- c(
+  "Switzerland" = "Europe",
+  "Iceland" = "Europe",
+  "Norway" = "Europe",
+  "Germany" = "Europe",
+  "United Kingdom" = "Europe",
+  "Netherlands" = "Europe",
+  "Italy" = "Europe"
+  
+)
+ region.mapping.northamerica <- c(
+  "Canada" = "Canada",
+  "United States" = "United States",
+  "United States/Canada" = "United States/Canada"
+)
+
+region.mapping.global <- c(
+  "Switzerland" = "Europe",
+  "Iceland" = "Europe",
+  "Norway" = "Europe",
+  "Germany" = "Europe",
+  "United Kingdom" = "Europe",
+  "Netherlands" = "Europe",
+  "Italy" = "Europe",
+  "MENA" = "MENA",
+  "Canada" = "North America",
+  "United States" = "North America",
+  "United States/Canada" = "North America",
+  "South America" = "South America",
+  "Australia" = "Australia",
+  "Unspecified" = "Unspecified",
+  "Other" = "Other"
+  )
+```
+
+## File Availability
+
+```{r}
+if (model.mode == "reproduction"){
+  print("Model started in reproduction mode.")
+  files.required <- c("02_output_plots_new/01_conventional_growth_parameters.rds",
+                      "02_output_plots_new/02_conventional_growth_sample.rds",
+                      "02_output_plots_new/03_conventional_growth_results.rds",
+                    "02_output_plots_new/04_unconventional_growth_parameters.rds",
+                      "02_output_plots_new/05_unconventional_growth_sample.rds",
+                      "02_output_plots_new/06_unconventional_growth_results.rds")
+  if (all(file.exists(files.required)) == TRUE){
+    print("All required simulation result files found.")
+  } else
+    print("Required simulation result files are missing.")
+} else if (model.mode == "simulation"){
+  print("Model started in simulation mode.")
+  } else {
+  stop("Please specify either reproduction or simulation mode.")
+}
+```
+
+# DAC Projects Database
+
+```{r, message = FALSE}
+# DAC Projects Database
+file.dacprojects <- paste0(path.input, "Capacity DAC Projects Database 2023.xlsx")
+data.dac <- ReadDACProjectsDB(
+  file.dacprojects,
+  dacprojects.range = "A5:N78",
+  capacity.factor = 1
+)
+
+#write.xlsx(data.dac, file = "02_output_plots_new/database_results.xlsx")
+```
+
+```{r, message = FALSE}
+# Transformation Function
+custom.trans <- function() {
+  trans_new(name = 'custom', 
+            transform = function(x) x^0.5,  #Transformation using the square roots
+            inverse = function(x) x^2) #Inverse function for axis
+}
+```
+
+## FIGURE 1: DAC Projects
+
+```{r, message = FALSE}
+
+regions.dac = tibble(name = c("Europe", "North America", "Global"),
+  list = list(
+    names(region.mapping.eu),
+    names(region.mapping.northamerica),
+    unique(data.dac$region)
+    ))
+
+# Europe
+regions <- regions.dac$list[[1]]
+names(regions) <- regions
+
+p1 <- plotDACProjects(data.dac = data.dac,
+                   regions = regions,
+                   fill.by = "region",
+                   title = "Europe: Country",
+                   leg.label = "Country")
+
+p2 <- plotDACProjects(data.dac = data.dac,
+                   regions = regions,
+                   title = "Europe: Status",
+                   fill.by = "status",
+                   leg.label = "Status")
+
+# North America
+regions <-  region.mapping.northamerica
+
+p3 <- plotDACProjects(data.dac = data.dac,
+                   regions = regions,
+                   fill.by = "region",
+                   title = "North America: Country",
+                   leg.label = "Country")
+
+p4 <- plotDACProjects(data.dac = data.dac,
+                   regions = regions,
+                   title = "North America: Status",
+                   fill.by = "status",
+                   leg.label = "Status")
+
+# Global
+regions <- region.mapping.global
+
+p5 <- plotDACProjects(data.dac = data.dac,
+                   regions = regions,
+                   fill.by = "region",
+                   title = "Global: Region",
+                   leg.label = "Region")
+
+p6 <- plotDACProjects(data.dac = data.dac,
+                   regions = regions,
+                   fill.by = "status",
+                   title = "Global: Status",
+                   leg.label = "Status")
+
+p <- plot_grid(p1, p2, p3, p4, p5, p6,
+               ncol = 2,
+               labels = "auto",
+               label_size = font.size)
+
+print(p)
+ggsave(paste0(path.output, "FIG01_dac_projects_without_SPB.png"),
+       bg = "white", width = 20, height = 15, units = "cm")
+ggsave(paste0(path.output, "FIG01_dac_projects_without_SPB.pdf"),
+       bg = "white", width = 20, height = 15, units = "cm")
+
+#write.xlsx(data.dac, file = "02_output_plots_new/data_results.xlsx")
+```
+
+# Case 1: Conventional Growth - Market Driven Case (Solar and Wind)
+
+## FIGURE 2: Illustration (Odenweller et al.(2022))
+
+```{r, message = FALSE, warning = FALSE}
+p <- plotIllustration()
+
+print(p)
+ggsave(paste0(path.output, "FIG02_illustration.png"),
+       width = 18, height = 12, units = "cm", bg = "white")
+ggsave(paste0(path.output, "FIG02_illustration.pdf"),
+       width = 18, height = 12, units = "cm", bg = "white")
+```
+
+## Input data
+
+### Wind and solar power capacities
+
+```{r, message = FALSE}
+# BP Statistical Review of World Energy 2023
+file.bp <- paste0(path.input, "bp-stats-review-2023-all-data.xlsx")
+data.bp <- ReadBPDB23(file.bp)
+```
+
+### DAC deployment targets
+
+```{r}
+data.targets <- tribble(
+  ~ region, ~year, ~unit, ~value,
+  
+  #Europe Scenarios
+  "Europe", 2025, "tCO2", 300000, #IPCC Ratio
+  "Europe", 2030, "tCO2", 5000000, #EU Net Zero 
+  "Europe", 2050, "tCO2", 152000000, #EU Net Zero 
+  
+  #North America Scenarios
+  "North America", 2025, "tCO2", 1000000, #IEA Net Zero by 2050
+  "North America", 2030, "tCO2", 38380000, #IPCC Ratio
+  "North America", 2050, "tCO2", 549240000, #IPCC Ratio
+  
+  #Global Scenarios
+  "Global", 2025, "tCO2", 14170000, #IPCC Ratio 
+  "Global", 2030, "tCO2", 85000000, #IEA Net Zero Scenario 
+  "Global", 2050, "tCO2", 980000000, #IEA Net Zero Scenario 
+  )
+ 
+```
+
+## Emergence growth rate from wind and solar power
+
+```{r, message = FALSE}
+
+# Fit exponential growth of wind and solar power in slices of varying lengths
+
+# Region mapping
+regions.bp = tibble(name = c("Europe", "North America", "Global"),
+                 list = list("Europe", "North America", "Global"),
+                 span = list(1996:2010,
+                             1996:2010,
+                             1996:2010))
+
+time.slice.length <- 5:10
+
+# Additive error specification
+exp_fit <- function(df) {
+  nlsLM(capacity ~ a * (1 + b)^(year - 1996),
+        data = df,
+        start = list(a = 100, b = 0.4))
+}
+
+
+# Get growth rate
+get_growthrate <- function(mod)
+  coef(mod)[["b"]]
+
+# Get parameter a
+get_a <- function(mod)
+  coef(mod)[["a"]]
+
+# Get predicted values
+get_predict <- function(mod)
+  list(predict(mod))
+
+# Loop over regions and time slices
+data.bp.fit <- NULL
+# Loop over regions
+for (r in 1:dim(regions.bp)[1]) {
+  time.span <- regions.bp$span[[r]]
+  # Loop over lengths of time slice
+  for (t in time.slice.length){
+    # Get individual time slices for each length t
+    for (s in 1:(length(time.span)-t+1)){
+      slice <- time.span[s:(s+t-1)]
+      
+      temp <- data.bp %>% 
+        filter(region %in% regions.bp$list[[r]],
+               year %in% slice) %>% 
+        group_by(technology, year) %>% 
+        summarise(capacity = sum(capacity)) %>% 
+        group_by(technology) %>% 
+        nest() %>% 
+        # Fit exponential models using purrr::map
+        mutate(model.exp = map(data, exp_fit)) %>% 
+        transmute(technology,
+                  b = map_dbl(model.exp, get_growthrate),
+                  a = map_dbl(model.exp, get_a),
+                  predict = map(model.exp, get_predict),
+                  slice.length = t,
+                  slice.start = slice[1],
+                  region = regions.bp$name[[r]])
+     
+      data.bp.fit <- bind_rows(data.bp.fit, temp)
+    }
+  }
+}
+```
+
+## Monte Carlo sampling: Initial capacity, emergence growth rate
+
+```{r, message = FALSE}
+
+# Region mapping
+if (model.mode == "simulation") {
+  temp <- calcMonteCarloSample(
+    # Sample size
+    N = n,
+    # Initial value distribution
+    a.status = c("Decommissioned", "Operational", "Under Construction"),
+    # Lower truncation = a 
+    cap.1 = c("Decommissioned", "Operational", "Under Construction", "FID"),
+    # Condition 1
+    cumprob.1 = 0.15, # 15% Wahrscheinlichkeit für FID 
+    # Cumulative probability of condition 1
+    feasibilityAndDEP.success.rate = 0.3,
+    # Condition 2: x % of feasibility study and design and engineering phase projects
+    
+    # Growth rate distribution (MAYBE I HAVE TO ADJUST IT!!!)
+    slice.len = 10,
+    # Length of time slice (wind, solar)
+    b.min = bmin  # Lower truncation
+  )
+  data.input <- temp[[1]]
+  data.input.param <- temp[[2]]
+  saveRDS(data.input.param,
+          "02_output_plots_new/01_conventional_growth_parameters.rds")
+  saveRDS(data.input,
+          "02_output_plots_new/02_conventional_growth_sample.rds")
+} else if (model.mode == "reproduction") {
+  data.input.param <-
+    readRDS("02_output_plots_new/01_conventional_growth_parameters.rds")
+  data.input <-
+    readRDS("02_output_plots_new/02_conventional_growth_sample.rds")
+}
+
+```
+
+## FIGURE 3: Parameter distributions
+
+```{r, warning = FALSE}
+plots <- plotParameterDistributions(data.input = data.input,
+                                    data.input.param = data.input.param)
+
+# Total plot
+p.col1 <- plot_grid(plots[[1]] + theme(legend.position = "none"),
+                    plots[[2]] + theme(legend.position = "none"),
+                    NULL,
+                    plots[[3]] + theme(legend.position = "none"),
+                    ncol = 1,
+                    align = "v",
+                    rel_heights = c(1, 0.15, 0.05, 1.1),
+                    labels = c("a", "", "","a"),
+                    label_size = font.size
+                    )
+
+p.col2 <- plot_grid(plots[[4]] + theme(legend.position = "none"),
+                    plots[[5]] + theme(legend.position = "none"),
+                    NULL,
+                    plots[[6]] + theme(legend.position = "none"),
+                    ncol = 1,
+                    align = "v",
+                    rel_heights = c(1, 0.15, 0.05, 1.1),
+                    labels = c("b", "", "","b"),
+                    label_size = font.size
+                    )
+
+plots_global <- plotParameterDistributions(data.input = data.input, data.input.param)
+
+plots <- c(plots, plots_global)
+
+p.col3 <- plot_grid(plots[[7]] + theme(legend.position = "none"),
+                    plots[[8]] + theme(legend.position = "none"),
+                    NULL,
+                    plots[[9]] + theme(legend.position = "none"),
+                    ncol = 1,
+                    align = "v",
+                    rel_heights = c(1, 0.15, 0.05, 1.1),
+                    labels = c("c", "", "","c"),
+                    label_size = font.size
+                    )
+
+p.plots <- plot_grid(p.col1,
+                     p.col2,
+                     p.col3,
+                     nrow = 1)
+
+p.legend <- plot_grid(NULL,
+                      get_legend(plots[[1]] + theme(legend.position = "bottom")),
+                      get_legend(plots[[2]] + theme(legend.direction = "vertical")),
+                      NULL,
+                      nrow = 1,
+                      rel_widths = c(1,0.9,0.7,1))
+
+p <- plot_grid(p.plots,
+               p.legend,
+               ncol = 1,
+               rel_heights = c(1,0.15))
+
+print(p)
+ggsave(paste0(path.output, "FIG03_parameter_distributions_without_SPB.png"),
+       width = 18, height = 14, units = "cm", bg = "white")
+ggsave(paste0(path.output, "FIG03_parameter_distributions_without_SPB.pdf"),
+       width = 18, height = 14, units = "cm", bg = "white")
+
+
+
+#write.xlsx(data.input, file = "02_output_plots_new/data_input.xlsx")
+```
+
+
+## Demand pull
+
+```{r}
+# Different anticipation scenarios (in years)
+anticipation <- c(0, 5, 10, 100)  # 100y = full demand pull
+
+# Model time span
+model.time <- t.split:2050
+
+
+data.demand <- NULL
+for (r in 1:3){
+  for (a in anticipation){
+    
+    # Targets in region
+    targets.temp <- data.targets %>%
+      filter(region == regions.dac$name[[r]])
+    
+    # Calculate linear demand pull with anticipation
+    data.temp <- tibble(region = regions.bp$name[r],
+                        year = model.time) %>%   
+      mutate(demand = approx(x = targets.temp$year,
+                             y = targets.temp$value,
+                             xout = model.time ,    
+                             method = "linear",
+                             rule = 2)[["y"]]) %>% 
+      mutate(demand = lead(demand, a, default = last(demand)),
+             anticipation = a) %>% 
+      group_by(region) %>%
+      nest(demand = c("year", "demand")) %>% 
+      ungroup()
+    
+    data.demand <- bind_rows(data.demand, data.temp)
+  }
+}
+```
+
+
+## Call simulation
+
+```{r, message = F}
+# Simulation mode
+if (model.mode == "simulation") {
+  # Keep track of time
+  start.time <- Sys.time()
+  # Call diffusion model
+  data.results <-
+    calcTechnologyDiffusion(data.demand, data.input, 0.25)
+  # Save simulation results
+  saveRDS(data.results,
+          "02_output_plots_new/03_conventional_growth_results.rds")
+  # Print duration of simulation
+  end.time <- Sys.time()
+  time.taken <- end.time - start.time
+  print(time.taken)
+  # Reproduction mode
+} else if (model.mode == "reproduction") {
+  data.results <-
+    readRDS("02_output_plots_new/03_conventional_growth_results.rds")
+}
+```
+
+## FIGURE 4: Probabilistic feasibility space
+
+```{r}
+#Definition of my own colors 
+
+mycolors <- c("#A1AB71", "#66AFC0", "#7A9DCF") #ETH Green, Petrol and Blue 
+
+colours <- mycolors
+
+#colours <- pal_npg()(2)
+
+p1 <- plotProbabilisticFeasibilitySpace(
+  data.row = data.results %>%
+    filter(region == "Europe", anticipation == 5),
+  data.targets = data.targets,
+  colour = colours[1],
+  marginal.year = 2040,
+  title = "Europe"
+)
+
+p2 <- plotProbabilisticFeasibilitySpace(
+  data.row = data.results %>%
+    filter(region == "North America", anticipation == 5),
+  data.targets = data.targets,
+  colour = colours[1],
+  marginal.year = 2043,
+  title = "North America"
+)
+
+p3 <- plotProbabilisticFeasibilitySpace(
+  data.row = data.results %>%
+    filter(region == "Global", anticipation == 5),
+  data.targets = data.targets,
+  colour = colours[1],
+  marginal.year = 2043,
+  title = "Global"
+)
+
+p.legend <- p3[[2]]
+
+p.plots <- plot_grid(p1[[1]], p2[[1]],p3[[1]],
+                     ncol = 3,
+                     rel_widths = c(1, 1, 1, 1),
+                     labels = c("a", "b", "c"),
+                     label_size = font.size)
+
+p <- plot_grid(p.plots,
+               NULL,
+               p.legend,
+               ncol = 3,
+               rel_widths = c(1, 0.05, 0.25, 0.025))
+
+
+print(p)
+ggsave(paste0(path.output, "FIG04_Probabilistic_Feasibility_Space_Conventional_without_SPB.png"),
+       width = 18, height = 5, units = "cm", bg = "white")
+ggsave(paste0(path.output, "FIG04_Probabilistic_Feasibility_Space_Conventional_without_SPB.pdf"),
+       width = 18, height = 5, units = "cm", bg = "white")
+```
+
+
+## Quantiles of results
+
+```{r, message = FALSE}
+for (r in c("Europe", "North America", "Global")){
+  
+  stats <- data.results %>% 
+  filter(region == r,
+         anticipation == 5) %>% 
+  select(!demand) %>% 
+  unnest(sensitivities) %>% 
+  unnest(results) %>% 
+  filter(year %in% c(2025, 2030, 2050)) %>% 
+  group_by(year) %>% 
+  summarise(quibble(forecast))
+  
+  print(stats)
+}
+```
+
+
+# Case 2: Unconventional Growth - Extrem Case (Several different Technologies)
+
+## Input data
+
+### WW2 US aircraft
+
+```{r}
+#www.aia-aerospace.org/wp-content/uploads/2016/06/Aviation-Facts-and-Figures-1945.pdf
+
+data.ww2aircraft <- tibble(
+  year = 1935:1944,
+  prod = c(459, 1141, 949, 1800, 2141, 6086, 19290, 47873, 85946, 96369)
+) %>% 
+  mutate(value = cumsum(prod),
+         unit = "units",
+         tech = "WW2 US aircraft") %>% 
+  select(!prod) %>% 
+  mutate(number = 1)
+
+```
+
+### WW2 US liberty ships
+
+```{r}
+file.libertyships <- paste0(path.input, "Liberty_ships.xlsx")
+
+data.libertyships <- read_excel(file.libertyships, sheet = "matlab") %>% 
+  select(year, LS_cum) %>% 
+  rename(value = LS_cum) %>% 
+  group_by(year) %>% 
+  slice(n()) %>% 
+  mutate(unit = "units",
+         tech = "WW2 US liberty ships") %>%
+  ungroup() %>% 
+  add_row(tibble(year = 1938,
+                 unit = "units",
+                 tech = "WW2 US liberty ships",
+                 value = 0)) %>%
+  arrange(year) %>% 
+  mutate(number = 2)
+```
+
+### US nuclear weapons
+
+```{r}
+#https://doi.org/10.2968%2F066004008
+
+file.nuclearweapons <- paste0(path.input, "Nuclear_weapons.xlsx")
+
+data.usnuclearweapons <- read_excel(file.nuclearweapons, range = "A1:B57") %>% 
+  rename(year = Year,
+         value = US) %>% 
+  mutate(unit = "units",
+         tech = "US Nuclear weapons") %>% 
+  filter(year <= 1967) %>% 
+  mutate(number = 3)
+```
+
+### Soviet nuclear weapons
+
+```{r}
+#https://doi.org/10.2968%2F066004008
+
+data.sovietnuclearweapons <-
+  read_excel(file.nuclearweapons, range = "A1:C57") %>%
+  rename(year = Year,
+         value = Russia) %>% 
+  select(!US) %>% 
+  mutate(unit = "units",
+         tech = "Soviet Nuclear weapons") %>% 
+  filter(!is.na(value), year <= 1986) %>% 
+  mutate(number = 4)
+```
+
+### Nuclear power in France
+
+```{r, warning = FALSE}
+data.nuclear <-
+  read_excel(file.bp,
+             sheet = "Nuclear Generation - TWh",
+             range = "B3:BE32",
+             col_types = "numeric") %>%
+  slice(n()) %>% 
+  pivot_longer(cols = "1965":"2020", names_to = "year", values_to = "value") %>% 
+  mutate(year = as.integer(year),
+         value = as.double(value),
+         unit = "TWh/yr",
+         tech = "Nuclear France") %>% 
+  filter(year <= 2005) %>% 
+  mutate(number = 5)
+```
+
+### Internet host count
+
+```{r}
+file.internet <- paste0(path.input, "Internet_host_count.xlsx")
+
+data.internet <- read_excel(file.internet) %>% 
+  mutate(year = decimal_date(date),
+         value = value/1E6,
+         unit = "million hosts",
+         tech = "Internet host count") %>% 
+  select(year, value, unit, tech) %>% 
+  arrange(year) %>% 
+  filter(year < 2018) %>% 
+  mutate(number = 6)
+```
+
+### China high-speed rail network
+
+```{r}
+#https://uic.org/passenger/highspeed/article/high-speed-database-maps
+
+file.chinahsr <- paste0(path.input, "china_hsr.xlsx")
+
+data.chinahsr <- read_excel(file.chinahsr, sheet = "values") %>% 
+  group_by(year) %>% 
+  summarise(new = sum(km)) %>% 
+  mutate(value = cumsum(new),
+         unit = "km",
+         tech = "High-speed rail China") %>% 
+  select(year, value, unit, tech) %>% 
+  complete(year = seq(2003, 2020)) %>% 
+  fill(value, unit, tech) %>% 
+  add_row(tibble(year = 2002,
+                 value = 0,
+                 unit = "km",
+                 tech = "High-speed rail China")) %>% 
+  arrange(year) %>% 
+  mutate(number = 7)
+```
+
+### US dry shale gas
+
+```{r}
+#https://www.eia.gov/dnav/ng/hist/res_epg0_r5302_nus_bcfa.htm
+
+file.shale <- paste0(path.input, "RES_EPG0_R5302_NUS_BCFa.xls")
+
+data.shale <- read_excel(file.shale,
+                         sheet = "Data 1",
+                         range = "A4:B16",
+                         col_names = c("date", "value")) %>% 
+  mutate(unit = "billion cubic feet",
+         tech = "US shale gas",
+         year = decimal_date(date)) %>% 
+  select(year, value, unit, tech) %>% 
+  mutate(number = 8)
+```
+
+### Smartphone shipments (cumulative)
+
+```{r}
+#https://www.statista.com/statistics/263441/global-smartphone-shipments-forecast/
+#https://www.statista.com/statistics/271539/worldwide-shipments-of-leading-smartphone-vendors-since-2007/
+#https://www.researchgate.net/publication/50836092_Structuring_the_Smartphone_Industry_Is_the_Mobile_Internet_OS_Platform_the_Key/figures
+
+data.smartphones <- tibble(
+  year = 2006:2020,
+  prod = c(64.1, 122.36, 151.4, 173.5, 304.7, 494.5, 725.3, 1018.7, 1301.7, 1437.2, 1473.4, 1465.5, 1402.6, 1371.1, 1280)
+) %>% 
+  mutate(value = cumsum(prod),
+         unit = "million units",
+         tech = "Smartphones globally") %>% 
+  select(!prod) %>% 
+  mutate(number = 9)
+```
+
+### Europe e-bike sales (cumulative)
+
+```{r}
+#https://www.statista.com/statistics/276036/unit-sales-e-bikes-europe/
+#https://www.ziv-zweirad.de/fileadmin/redakteure/Downloads/Marktdaten/PM_2021_10.03._ZIV-Praesentation_10.03.2021_mit_Text.pdf
+
+data.ebikes <- tibble(
+  year = 2009:2020,
+  sales = c(0.5, 0.7, 0.9, 1.1, 1, 1.25, 1.5, 1.74, 2.2, 2.92, 3.6, 5.1)
+) %>% 
+  mutate(value = cumsum(sales),
+         unit = "million units",
+         tech = "E-Bikes Europe") %>% 
+  select(!sales) %>% 
+  mutate(number = 10)
+```
+
+## Join datasets
+
+```{r}
+data.unconventional <- bind_rows(
+  data.ww2aircraft,
+  data.libertyships,
+  data.usnuclearweapons,
+  data.sovietnuclearweapons,
+  data.nuclear,
+  data.internet,
+  data.chinahsr,
+  data.shale,
+  data.smartphones,
+  data.ebikes,
+) %>% 
+  group_by(tech) %>% 
+  mutate(value.norm = value/max(value)) %>%
+  ungroup() %>% 
+  arrange(number, year)
+```
+
+## Estimate logistic growth rates
+
+```{r}
+# Loop over technologies and time slices
+param.unconventional.fit <- NULL
+techs <- data.unconventional %>% 
+  pull(tech) %>% 
+  unique()
+for (i in techs) {
+  # Filter technology
+  data.tech <- data.unconventional %>%
+    filter(tech == i)
+  fit <- nls(value.norm ~ SSlogis(year, Asym, xmid, scal),
+             data = data.tech)
+  r <- exp(1/coef(fit)["scal"]) - 1  # Transform into annual growth rate
+  # Temporary data to save
+  temp <- tibble(
+    tech = i,
+    b = r
+  )
+  param.unconventional.fit <- bind_rows(param.unconventional.fit, temp)
+}
+```
+
+## Re-parameterise growth distribution
+
+```{r}
+if (model.mode == "simulation"){
+# New growth rate distribution
+b.mean <- mean(param.unconventional.fit %>% pull(b))
+b.sd <- sd(param.unconventional.fit %>% pull(b))
+# New growth rate sample
+b.sample <- rtruncnorm(n = n, a = 0.15, b = Inf, mean = b.mean, sd = b.sd)
+data.input.unconv <- data.input
+data.input.unconv$growth <- rep(b.sample, 3)  # For Europe, North America and Global
+# New input file
+data.input.param.unconv <- data.input.param %>% 
+  select(!c(growth.solar, growth.wind))
+# New growth parameter values
+data.input.param.unconv$growth.min <- bmin
+data.input.param.unconv$growth.mean <- b.mean
+data.input.param.unconv$growth.sd <- b.sd
+data.input.param.unconv$growth.sample.mean <- mean(b.sample)
+data.input.param.unconv$growth.sample.sd <- sd(b.sample)
+data.input.param.unconv$growth.sample.q25 <- quantile(b.sample, 0.25)
+data.input.param.unconv$growth.sample.q75 <- quantile(b.sample, 0.75)
+# Save parameters and sample
+saveRDS(data.input.param.unconv, "02_output_plots_new/04_unconventional_growth_parameters.rds")
+saveRDS(data.input.unconv, "02_output_plots_new/05_unconventional_growth_sample.rds")
+} else if (model.mode == "reproduction"){
+  # Load parameters and sample
+  data.input.param.unconv <- readRDS("02_output_plots_new/04_unconventional_growth_parameters.rds")
+  data.input.unconv <- readRDS("02_output_plots_new/05_unconventional_growth_sample.rds")
+}
+
+#write.xlsx(data.input.unconv, file = "02_output_plots_new/data_input_unconv.xlsx")
+```
+
+## Call simulation
+
+```{r}
+if (model.mode == "simulation") {
+  # Keep track of time
+  start.time <- Sys.time()
+  # Call diffusion model
+  data.results.unconv <-
+    calcTechnologyDiffusion(data.demand, data.input.unconv, 0.25)
+  # Save simulation results
+  saveRDS(data.results.unconv,
+          "02_output_plots_new/06_unconventional_growth_results.rds")
+  # Print duration of simulation
+  end.time <- Sys.time()
+  time.taken <- end.time - start.time
+  print(time.taken)
+  
+} else if (model.mode == "reproduction") {
+  data.results.unconv <-
+    readRDS("02_output_plots_new/06_unconventional_growth_results.rds")
+}
+```
+
+## FIGURE 5: Unconventional growth
+
+```{r, warning = FALSE}
+techs <- data.unconventional %>% 
+  pull(tech) %>% 
+  unique()
+colors.tech <- pal_lancet()(length(techs))
+names(colors.tech) <- techs
+
+top <- 1.1
+mid <- 0.9
+low <- 0.7
+
+# Annotation labels
+data.plot.labels <- tribble(
+  ~year, ~ypos, ~color, ~label,
+  1938, top, "WW2 US aircraft", "1: WWII US\naircraft",
+  1946, mid, "WW2 US liberty ships", "2: WWII US\nliberty ships",
+  1960, top, "US Nuclear weapons", "3: US nuclear\nweapons",
+  1966, mid, "Soviet Nuclear weapons", "4: Soviet nuclear\nweapons",
+  1986, top, "Nuclear France", "5: Nuclear power\nFrance",
+  1998, low, "Internet host count", "6: Internet\nhosts",
+  2005, top, "High-speed rail China", "7: High-speed\nrail China",
+  2020, top, "US shale gas", "8: US dry\nshale gas",
+  2020, low, "Smartphones globally", "9: Smartphones\nglobally",
+  2021, 0.5, "E-Bikes Europe", "10: E-Bikes\nEurope"
+)
+
+# PANEL a: Unconventional growth curves
+p.curves <- ggplot() +
+  geom_line(data = data.unconventional,
+            mapping = aes(x = year, y = value.norm, color = tech)) + 
+  scale_color_manual(name = NULL,
+                     values = colors.tech) +
+  scale_x_continuous(name = "Year",
+                     breaks = seq(1940, 2020, 10),
+                     limits = c(1938, 2032)) +
+  scale_y_continuous(name = "Deployment Levels (relative to maximum)") + 
+  ggtitle("Normalised Unconventional Growth") +
+  theme(axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        plot.title = element_text(
+            face = "bold",
+            size = font.size)) +
+  geom_label(data = data.plot.labels,
+            mapping = aes(x = year, y = ypos, label = label, color = color),
+            size = 5 / .pt,
+            fontface = "bold",
+            hjust = 0,
+            label.padding = unit(0.7, "mm")) +
+  coord_cartesian(ylim = c(0, 1.2),clip = "off") +
+  geom_line(mapping = aes(x = c(1938, 2024), y = 1),
+            linetype = "dotted",
+            alpha = 0.5)
+
+growth.min <- 0.15
+growth.max <- 4
+
+# Sample
+data.plot.sample <- data.input.unconv %>% 
+  filter(region == "Global")  # The same anyway
+
+# Density
+data.plot.density <- tibble(
+  growth = seq(growth.min, growth.max, length.out = 100),
+  growth.dens = dtruncnorm(growth,
+                           a = growth.min,
+                           mean = data.input.param.unconv$growth.mean[[1]],
+                           sd = data.input.param.unconv$growth.sd[[1]])
+)
+
+data.plot.growthrates <- param.unconventional.fit %>% 
+  ungroup() %>% 
+  mutate(number = 1:n()) %>% 
+  arrange(b) %>% 
+  mutate(order = 1:n()) %>% 
+  mutate(ypos = case_when(order %% 4 == 1 ~ 0.45,
+                          order %% 4 == 2 ~ 0.35,
+                          order %% 4 == 3 ~ 0.25,
+                          order %% 4 == 0 ~ 0.15))
+
+bins <- 20
+
+# PANEL b: Growth rates
+p.growth <- ggplot() + 
+  # Sample
+  geom_histogram(data = data.plot.sample,
+                 mapping = aes(x = 100*growth, y = 100*..density.., color = "Sample"),
+                 binwidth = (100*growth.max - 100*growth.min)/bins,
+                 boundary = 100*growth.min,
+                 alpha = 0.3) +
+  scale_color_manual(name = NULL, values = c("Sample" = "#E2E2E2")) +
+  # Distribution
+  new_scale_color() +
+  geom_line(data = data.plot.density,
+            mapping = aes(x = 100*growth, y = growth.dens, color = "Density")) +
+  scale_color_manual(name = NULL, values = c("Density" = "black")) +
+  new_scale_color() + 
+  # Vertical lines
+  geom_vline(data = data.plot.growthrates,
+             mapping = aes(xintercept = 100*b,
+                           color = tech),
+             linetype = "dotted") + 
+  scale_color_manual(name = NULL,
+                     values = colors.tech) +
+  # Numbers in boxes
+  geom_label(data = data.plot.growthrates,
+             mapping = aes(x = b*100,
+                           y = ypos,
+                           label = number,
+                           color =  tech),
+             size = 6 /.pt,
+             label.padding = unit(0.7, "mm")) +
+  scale_x_continuous(name = "Emergence Growth Rate [%/yr]",
+                     limits = c(0, 100*growth.max)) + 
+  ylab("Probability Density [yr]") +
+  ggtitle("Distribution of Unconventional Growth Rates") +
+  theme(axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        plot.title = element_text(
+          face = "bold",
+          size = font.size))
+# Arrange plots
+p.row1 <- plot_grid(p.curves + theme(legend.position = "none"),
+                    p.growth + theme(legend.position = "none"),
+                    ncol = 2,
+                    rel_widths = c(0.6, 0.4),
+                    labels = c("d", "e"),
+                    label_size = font.size)
+
+p <- plot_grid(p.row1,
+               NULL,
+               ncol = 1,
+               rel_heights = c(1, 0.05, 1))
+
+print(p)
+ggsave(paste0(path.output, "FIG05_PFS_Unconventional_Standard_Rates_without_SPB.png"),
+       width = 18, height = 6, units = "cm", bg = "white")
+ggsave(paste0(path.output, "FIG05_PFS_Unconventional_Standard_Rates_without_SPB.pdf"),
+       width = 18, height = 6, units = "cm", bg = "white")
+```
+
+
+```{r, warning = FALSE}
+# PANEL c + d + e: Unconventional DAC growth
+
+#Definition of my own colors 
+
+mycolors <- c("#A1AB71", "#66AFC0", "#7A9DCF") #ETH Green, Petrol and Blue 
+
+colours <- mycolors
+
+p1 <-
+  plotProbabilisticFeasibilitySpace(
+    data.row = data.results.unconv %>%
+      filter(region == "Europe", anticipation == 5),
+    data.targets = data.targets,
+    colour = colours[2],
+    marginal.year = 2032,
+    title = "Europe",
+    ci.80 = T,
+    zoom = F
+  )
+
+p2 <-
+  plotProbabilisticFeasibilitySpace(
+    data.row = data.results.unconv %>%
+      filter(region == "North America", anticipation == 5),
+    data.targets = data.targets,
+    colour = colours[2],
+    marginal.year = 2032,
+    title = "North America",
+    ci.80 = T,
+    zoom = F
+  )
+
+p3 <-
+  plotProbabilisticFeasibilitySpace(
+    data.row = data.results.unconv %>%
+      filter(region == "Global", anticipation == 5),
+    data.targets = data.targets,
+    colour = colours[2],
+    marginal.year = 2032,
+    title = "Global",
+    ci.80 = T,
+    zoom = F
+  )
+
+# Arrange plots
+p.row2 <- plot_grid(p1[[1]],
+                    NULL,
+                    p2[[1]],
+                    NULL,
+                    p3[[1]],
+                    NULL,
+                    p3[[2]],
+                    ncol = 8,
+                    rel_widths = c(1, 0.025, 1, 0.025, 1, 0.025),
+                    labels = c("d", "", "e", "","f", ""),
+                    label_size = font.size)
+
+p <- plot_grid(p.row2,
+               ncol = 1,
+               rel_heights = c(1, 0.05, 0.025))
+
+print(p)
+ggsave(paste0(path.output, "FIG05_PFS_Unconventional_Standard_without_SPB.png"),
+       width = 18, height = 5, units = "cm", bg = "white")
+ggsave(paste0(path.output, "FIG05_PFS_Unconventional_Standard_without_SPB.pdf"),
+       width = 18, height = 5, units = "cm", bg = "white")
+```
+
+# Case 3: Conservative Growth - Less Ambitious Case (Similar Technologies)
+
+## Input data
+
+### CCS (Installed Capacity World) 
+
+```{r}
+
+data.ccs <- tibble(
+  year = 1971:2019,
+  sales = c(0.5,	0.5,	0.5,	0.5,	0.5,	0.5,	0.5,	0.5,	0.5,	0.5,	0.5,	1.2,	1.2,	1.2,	1.2,	8.2,	8.2,	8.2,	8.2,	8.2,	8.2,	8.2,	8.2,	8.2,	8.2,	9.2,	9.2,	9.2,	9.2,	12.2,	12.2,	12.2,	12.2,	12.2,	12.2,	12.2,	12.2,	12.9,	12.9,	21.3,	21.3,	21.3,	27.2,	28.2,	30,	30.8,	33.2,	33.8,	37.5)
+) %>% 
+  mutate(value = cumsum(sales),
+         unit = "GW",
+         tech = "CCS Global Installed Capacity") %>% 
+  select(!sales) %>% 
+  mutate(number = 3)
+```
+
+### Municipal Waste Materials Recycled in EU
+
+```{r}
+
+data.mswrecylcled <- tibble(
+  year = 1995:2021,
+  sales = c(23, 26, 30, 32, 37, 38, 40, 43, 43, 43, 46, 47, 52, 53, 54, 55, 56, 58, 56, 59, 63, 65, 65, 66, 67, 69, 70)
+) %>% 
+  mutate(value = cumsum(sales),
+        unit = "Million Metric Tons",
+         tech = "Total Municipal Waste Materials Recycled in EU") %>% 
+  select(!sales) %>% 
+  mutate(number = 4)
+```
+
+### Global Ammonia Synthesis Production
+
+```{r}
+
+data.ammonia <- tibble(
+  year = 1924:2020,
+  sales = c(255, 289, 300, 367, 2598, 2645.6, 2133.4, 2107.4, 2236.9, 2327, 2603, 3023, 3385, 3645, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3589.987, 3956.773, 4462.385, 4808.62, 5540, 6300, 6650, 7280, 8530, 9390, 9780, 10740, 12937.059, 13544.151, 15477.434, 17609.862, 20325.168, 23070.228, 25836.183, 28141.97, 30195.308, 33258.266, 35249.174, 38350.337, 41033.282, 42414.805, 44619.593, 46449.524, 50468.029, 55909.463, 59622.703, 62777.606, 62291.849, 63493.886, 68268.923, 74855.695, 73680.818, 77696.274, 82028.36, 85767.301, 85185.849, 82279.841, 80831.186, 80314.695, 80302.72, 80011.675, 86486.98, 90418.464, 87566.043, 88392.236, 89161.871, 85129.097, 85670.741, 87334.65659, 88722.23565, 94211.27627, 95401.6224, 95157.92192, 102402.8279, 100266.5045, 98588.04969, 107431.9324, 107783.99, 109821.5327, 114908.875, 115823.0681, 120785.4006, 119405.796, 120677.587, 121230.526, 123987.3633, 123145.0518)
+) %>% 
+  mutate(value = cumsum(sales),
+         unit = "Thousand Metric Tons of Nitrogen Equivalent",
+         tech = "Global Annual Ammonia Synthesis Production") %>% 
+ select(!sales) %>% 
+  mutate(number = 1)
+```
+
+### Global Nuclear Energy Production
+
+```{r}
+
+data.nuclear <- tibble(
+  year = 1965:2021,
+  sales = c(25.53972424,	34.43329033,	41.006014,	52.11316407,	61.78341156,	78.87465713,	109.7041774,	152.1751488,	203.9015793,	266.6000934,	369.8481907,	432.671421,	538.5478136,	625.794396,	650.8598947,	711.924223,	840.7507617,	912.1775425,	1033.81271,	1254.568438,	1488.921637,	1594.735734,	1734.733117,	1891.249267,	1945.010586,	2000.462024,	2096.174705,	2112.089141,	2184.826061,	2225.844324,	2322.395978,	2406.801052,	2390.276558,	2431.421909,	2523.952702,	2580.899081,	2653.767774,	2696.170555,	2641.568435,	2761.605227,	2768.867742,	2803.365936,	2746.229909,	2737.70771,	2698.983475,	2768.505889,	2652.676552,	2470.77955,	2490.533299,	2541.382685,	2575.592424,	2613.905875,	2637.234693,	2700.464015,	2796.354063,	2693.978613,	2800.267792)
+) %>% 
+  mutate(value = cumsum(sales),
+         unit = "TWh",
+         tech = "Global Annual Nuclear Energy Production") %>% 
+  select(!sales) %>% 
+  mutate(number = 2)
+```
+
+### Liquefied Natural Gas Production in US
+
+```{r}
+
+data.naturalgas <- tibble(
+  year = 1985:2021,
+  sales = c(52.88,	50.17,	48.6,	51.57,	51.42,	52.55,	54.01,	52.53,	55.99,	62.68,	65.28,	67.65,	62.19,	65.98,	63.88,	66.03,	66.22,	63.84,	66.08,	62.47,	65.37,	60.94,	48.49,	39.22,	33.36,	64.79,	70,	28.3,	2.92,	16.26,	28.38,	186.84,	707.54,	1083.12,	1819.4,	2389.84,	3560.82)
+) %>% 
+  mutate(value = cumsum(sales),
+         unit = "Billion Cubic Feet",
+         tech = "Annual Production Liquefied Natural Gas in US") %>% 
+  select(!sales) %>% 
+  mutate(number = 5)
+```
+
+## Join datasets Conservative Growth
+
+```{r}
+data.conservative <- bind_rows( 
+ data.ccs,
+ data.mswrecylcled,
+data.ammonia,
+data.nuclear,
+data.naturalgas
+) %>% 
+  group_by(tech) %>% 
+  mutate(value.norm = value/max(value)) %>%
+  ungroup() %>% 
+  arrange(number, year)
+```
+
+## Estimate logistic growth rates Conservative Growth
+
+```{r}
+# Loop over technologies and time slices
+param.conservative.fit <- NULL
+techs <- data.conservative %>%
+  pull(tech) %>% 
+  unique()
+
+for (i in techs) {
+  # Filter technology
+  data.tech <- data.conservative %>%
+    filter(tech == i)
+  
+  # Provide initial parameter values
+  start_values <- c(Asym = max(data.tech$value.norm), xmid = median(data.tech$year), scal = 1)
+  
+  # Fit logistic growth model using nlsLM from minpack.lm
+  fit <- nlsLM(value.norm ~ SSlogis(year, Asym, xmid, scal),
+               data = data.tech,
+               start = start_values,
+               control = nls.lm.control(maxiter = 1000))  # Increase the maximum number of iterations
+  
+  r <- exp(1/coef(fit)["scal"]) - 1  # Transform into annual growth rate
+  
+  # Temporary data to save
+  temp <- tibble(
+    tech = i,
+    b = r
+  )
+  param.conservative.fit <- bind_rows(param.conservative.fit, temp)
+}
+
+```
+
+## Re-parameterise growth distribution Conservative Growth
+
+```{r}
+if (model.mode == "simulation"){
+# New growth rate distribution
+b.mean <- mean(param.conservative.fit %>% pull(b))
+b.sd <- sd(param.conservative.fit %>% pull(b))
+# New growth rate sample
+b.sample <- rtruncnorm(n = n, a = 0.08, b = Inf, mean = b.mean, sd = b.sd)
+data.input.conserv <- data.input
+data.input.conserv$growth <- rep(b.sample, 3)  # For Europe, North America and Global
+# New input file
+data.input.param.conserv <- data.input.param %>% 
+  select(!c(growth.solar, growth.wind))
+# New growth parameter values
+data.input.param.conserv$growth.min <- bmin
+data.input.param.conserv$growth.mean <- b.mean
+data.input.param.conserv$growth.sd <- b.sd
+data.input.param.conserv$growth.sample.mean <- mean(b.sample)
+data.input.param.conserv$growth.sample.sd <- sd(b.sample)
+data.input.param.conserv$growth.sample.q25 <- quantile(b.sample, 0.25)
+data.input.param.conserv$growth.sample.q75 <- quantile(b.sample, 0.75)
+# Save parameters and sample
+saveRDS(data.input.param.conserv, "02_output_plots_new/04_unconventional_growth_parameters.rds")
+saveRDS(data.input.conserv, "02_output_plots_new/05_unconventional_growth_sample.rds")
+} else if (model.mode == "reproduction"){
+  # Load parameters and sample
+  data.input.param.conserv <- readRDS("02_output_plots_new/04_unconventional_growth_parameters.rds")
+  data.input.conserv <- readRDS("02_output_plots_new/05_unconventional_growth_sample.rds")
+}
+#write.xlsx(data.input.conserv, file = "02_output_plots_new/data_input_conserv.xlsx")
+```
+
+## Call simulation Conservative Growth
+
+```{r}
+if (model.mode == "simulation") {
+  # Keep track of time
+  start.time <- Sys.time()
+  # Call diffusion model
+  data.results.conserv <-
+    calcTechnologyDiffusion(data.demand, data.input.conserv, 0.25)
+  # Save simulation results
+  saveRDS(data.results.conserv,
+          "02_output_plots_new/07_conservative_growth_results.rds")
+  # Print duration of simulation
+  end.time <- Sys.time()
+  time.taken <- end.time - start.time
+  print(time.taken)
+  
+} else if (model.mode == "reproduction") {
+  data.results.conserv <-
+    readRDS("02_output_plots_new/07_conservative_growth_results.rds")
+}
+```
+
+## FIGURE 6: Conservative Growth
+
+```{r, warning = FALSE}
+techs <- data.conservative %>% 
+  pull(tech) %>% 
+  unique()
+colors.tech <- pal_npg()(length(techs))
+names(colors.tech) <- techs
+
+top <- 1.1
+mid <- 0.9
+low <- 0.7
+
+# Annotation labels
+data.plot.labels <- tribble(
+  ~year, ~ypos, ~color, ~label,
+  1985, top, "CCS Global Installed Capacity", "3: CCS\nGlobal Capacity",
+  2000, top, "Total Municipal Waste Materials Recycled in EU", "4: MSW\nRecycled EU",
+  1950, top, "Global Annual Ammonia Synthesis Production", "1: Global Ammonia\nSynthesis Production",
+  1970, top, "Global Annual Nuclear Energy Production", "2: Global Nuclear\nEnergy Production",
+ 2015, top, "Annual Production Liquefied Natural Gas in US", "5: US Natural\nGas Production"
+)
+
+# PANEL a: Conservative growth curves
+p.curves <- ggplot() +
+  geom_line(data = data.conservative,
+            mapping = aes(x = year, y = value.norm, color = tech)) + 
+  scale_color_manual(name = NULL,
+                     values = colors.tech) +
+  scale_x_continuous(name = "Year",
+                     breaks = seq(1950, 2020, 10),
+                     limits = c(1950, 2025)) +
+  scale_y_continuous(name = "Deployment Levels (relative to maximum)") + 
+  ggtitle("Normalised Conservative Growth") +
+  theme(axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        plot.title = element_text(
+            face = "bold",
+            size = font.size)) +
+  geom_label(data = data.plot.labels,
+            mapping = aes(x = year, y = ypos, label = label, color = color),
+            size = 5 / .pt,
+            fontface = "bold",
+            hjust = 0,
+            label.padding = unit(0.7, "mm")) +
+  coord_cartesian(ylim = c(0, 1.2),clip = "off") +
+  geom_line(mapping = aes(x = c(1950, 2025), y = 1),
+            linetype = "dotted",
+            alpha = 0.5)
+
+growth.min <- 0.08
+growth.max <- 0.75
+
+
+# Sample
+data.plot.sample <- data.input.conserv %>% 
+  filter(region == "Global")  # The same anyway
+
+# Density
+data.plot.density <- tibble(
+  growth = seq(growth.min, growth.max, length.out = 100),
+  growth.dens = dtruncnorm(growth,
+                           a = growth.min,
+                           mean = data.input.param.conserv$growth.mean[[1]],
+                           sd = data.input.param.conserv$growth.sd[[1]])
+)
+
+data.plot.growthrates <- param.conservative.fit %>% 
+  ungroup() %>% 
+  mutate(number = 1:n()) %>% 
+  arrange(b) %>% 
+  mutate(order = 1:n()) %>% 
+  mutate(ypos = case_when(order %% 5 == 1 ~ 2.5,
+                          order %% 5 == 2 ~ 2,
+                          order %% 5 == 3 ~ 1.5,
+                          order %% 5 == 4 ~ 1,
+                          order %% 5 == 0 ~ 0.5))
+
+bins <- 20
+
+# PANEL b: Growth rates
+p.growth <- ggplot() + 
+  # Sample
+  geom_histogram(data = data.plot.sample,
+                 mapping = aes(x = 100*growth, y = 100*..density.., color = "Sample"),
+                 binwidth = (100*growth.max - 100*growth.min)/bins,
+                 boundary = 100*growth.min,
+                 alpha = 0.3) +
+  scale_color_manual(name = NULL, values = c("Sample" = "#E2E2E2")) +
+  # Distribution
+  new_scale_color() +
+  geom_line(data = data.plot.density,
+            mapping = aes(x = 100*growth, y = growth.dens, color = "Density")) +
+  scale_color_manual(name = NULL, values = c("Density" = "black")) +
+  new_scale_color() + 
+  # Vertical lines
+  geom_vline(data = data.plot.growthrates,
+             mapping = aes(xintercept = 100*b,
+                           color = tech),
+             linetype = "dotted") + 
+  scale_color_manual(name = NULL,
+                     values = colors.tech) +
+  # Numbers in boxes
+  geom_label(data = data.plot.growthrates,
+             mapping = aes(x = b*100,
+                           y = ypos,
+                           label = number,
+                           color =  tech),
+             size = 6 /.pt,
+             label.padding = unit(0.7, "mm")) +
+  scale_x_continuous(name = "Emergence Growth Rate [%/yr]",
+                     limits = c(0, 100*growth.max)) + 
+  ylab("Probability density") +
+  ggtitle("Distribution of Conservative Growth Rates") +
+  theme(axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        plot.title = element_text(
+          face = "bold",
+          size = font.size))
+
+
+# Arrange plots
+p.row1 <- plot_grid(p.curves + theme(legend.position = "none"),
+                    p.growth + theme(legend.position = "none"),
+                    ncol = 2,
+                    rel_widths = c(0.6, 0.4),
+                    labels = c("f", "g"),
+                    label_size = font.size)
+
+p <- plot_grid(p.row1,
+               NULL,
+               ncol = 1,
+               rel_heights = c(1, 0.05, 1))
+
+print(p)
+ggsave(paste0(path.output, "FIG06_PFS_Conservative_Standard_Rates_without_SPB.png"),
+       width = 18, height = 6, units = "cm", bg = "white")
+ggsave(paste0(path.output, "FIG06_PFS_Conservative_Standard_Rates_without_SPB.pdf"),
+       width = 18, height = 6, units = "cm", bg = "white")
+```
+
+
+```{r, warning = FALSE}
+
+# PANEL c + d: Conservative DAC growth
+
+#Definition of my own colors 
+
+mycolors <- c("#A1AB71", "#66AFC0", "#7A9DCF") #ETH Green, Petrol and Blue 
+
+colours <- mycolors
+
+p1 <-
+  plotProbabilisticFeasibilitySpace(
+    data.row = data.results.conserv %>%
+      filter(region == "Europe", anticipation == 5),
+    data.targets = data.targets,
+    colour = colours[3],
+    marginal.year = 2048,
+    title = "Europe",
+    ci.80 = T,
+    zoom = F
+  )
+
+p2 <-
+  plotProbabilisticFeasibilitySpace(
+    data.row = data.results.conserv %>%
+      filter(region == "North America", anticipation == 5),
+    data.targets = data.targets,
+    colour = colours[3],
+    marginal.year = 2045,
+    title = "North America",
+    ci.80 = T,
+    zoom = F
+  )
+p3 <-
+  plotProbabilisticFeasibilitySpace(
+    data.row = data.results.conserv %>%
+      filter(region == "Global", anticipation == 5),
+    data.targets = data.targets,
+    colour = colours[3],
+    marginal.year = 2047,
+    title = "Global",
+    ci.80 = T,
+    zoom = F
+  )
+
+# Arrange plots
+p.row2 <- plot_grid(p1[[1]],
+                    NULL,
+                    p2[[1]],
+                    NULL,
+                    p3[[1]],
+                    NULL,
+                    p3[[2]],
+                    ncol = 8,
+                    rel_widths = c(1, 0.025, 1, 0.025, 1, 0.025),
+                    labels = c("g", "", "h", "","i", ""),
+                    label_size = font.size)
+
+p <- plot_grid(p.row2,
+               ncol = 1,
+               rel_heights = c(1, 0.05, 0.025))
+
+print(p)
+ggsave(paste0(path.output, "FIG06_PFS_Conservative_Standard_without_SPB.png"),
+       width = 18, height = 5, units = "cm", bg = "white")
+ggsave(paste0(path.output, "FIG06_PFS_Conservative_Standard_without_SPB.pdf"),
+       width = 18, height = 5, units = "cm", bg = "white")
+```
+
+## FIGURE 7: Conventional growth sensitivity analysis of anticipation
+
+```{r}
+p1 <- plotProbabilisticFeasibilitySpace(
+  data.row = data.results %>%
+    filter(region == "Europe", anticipation == 0),
+  data.targets = data.targets,
+  colour = colours[1],
+  marginal.year = 2040,
+  title = "Europe, no anticipation",
+  zoom.panel = F
+)
+
+p2 <- plotProbabilisticFeasibilitySpace(
+  data.row = data.results %>%
+    filter(region == "North America", anticipation == 0),
+  data.targets = data.targets,
+  colour = colours[1],
+  marginal.year = 2043,
+  title = "North America, no anticipation",
+  zoom.panel = F
+)
+
+p3 <- plotProbabilisticFeasibilitySpace(
+  data.row = data.results %>%
+    filter(region == "Global", anticipation == 0),
+  data.targets = data.targets,
+  colour = colours[1],
+  marginal.year = 2043,
+  title = "Global, no anticipation",
+  zoom.panel = F
+)
+
+p4 <- plotProbabilisticFeasibilitySpace(
+  data.row = data.results %>%
+    filter(region == "Europe", anticipation == 10),
+  data.targets = data.targets,
+  colour = colours[1],
+  marginal.year = 2038,
+  title = "Europe, 10 years anticipation",
+ zoom.panel = F
+)
+
+p5 <- plotProbabilisticFeasibilitySpace(
+  data.row = data.results %>%
+    filter(region == "North America", anticipation == 10),
+  data.targets = data.targets,
+  colour = colours[1],
+  marginal.year = 2043,
+  title = "North America, 10 years anticipation",
+  zoom.panel = F
+)
+
+p6 <- plotProbabilisticFeasibilitySpace(
+  data.row = data.results %>%
+    filter(region == "Global", anticipation == 10),
+  data.targets = data.targets,
+  colour = colours[1],
+  marginal.year = 2043,
+  title = "Global, 10 years anticipation",
+  zoom.panel = F
+)
+
+p7 <- plotProbabilisticFeasibilitySpace(
+  data.row = data.results %>%
+    filter(region == "Europe", anticipation == 100),
+  data.targets = data.targets,
+  colour = colours[1],
+  marginal.year = 2038,
+  title = "Europe, full anticipation",
+  zoom.panel = F
+)
+
+p8 <- plotProbabilisticFeasibilitySpace(
+  data.row = data.results %>%
+    filter(region == "North America", anticipation == 100),
+  data.targets = data.targets,
+  colour = colours[1],
+  marginal.year = 2043,
+  title = "North America, full anticipation",
+  zoom.panel = F
+)
+
+p9 <- plotProbabilisticFeasibilitySpace(
+  data.row = data.results %>%
+    filter(region == "Global", anticipation == 100),
+  data.targets = data.targets,
+  colour = colours[1],
+  marginal.year = 2043,
+  title = "Global, full anticipation",
+  zoom.panel = F
+)
+
+p.legend <- p1[[2]]
+
+p.plots <- plot_grid(p1[[1]], p2[[1]],p3[[1]],
+                     p4[[1]], p5[[1]],p6[[1]],
+                     p7[[1]], p8[[1]],p9[[1]],
+                     ncol = 3,
+                     rel_widths = c(1, 1),
+                     labels = "auto",
+                     label_size = font.size)
+
+p <- plot_grid(p.plots,
+               NULL,
+               p.legend,
+               ncol = 3,
+               rel_widths = c(1, 0.05, 0.15))
+
+print(p)
+ggsave(paste0(path.output, "FIG07_Sensitivity_Anticipation_Conventional_Standard_without_SPB.jpg"),
+       width = 18, height = 18, units = "cm", bg = "white")
+
+#write.xlsx(data.results, file = "02_output_plots_new/data_results_without_SBP.xlsx")
+```
+
+## Quantiles of Sensitivity Results (anticipation = 5)
+
+```{r, message = FALSE}
+for (r in c("Europe", "North America", "Global")){
+  
+  stats <- data.results %>% 
+  filter(region == r,
+         anticipation == 5) %>% 
+  select(!demand) %>% 
+  unnest(sensitivities) %>% 
+  unnest(results) %>% 
+  filter(year %in% c(2025, 2030, 2050)) %>% 
+  group_by(year) %>% 
+  summarise(quibble(forecast))
+  
+  print(stats)
+}
+
+#write.xlsx(stats, file = "02_output_plots_new/stats_conventional_a5_without_SPB_.xlsx")
+```
+
+## Quantiles of Sensitivity Results (anticipation = 10)
+
+```{r, message = FALSE}
+for (r in c("Europe", "North America", "Global")){
+  
+  stats <- data.results %>% 
+  filter(region == r,
+         anticipation == 10) %>% 
+  select(!demand) %>% 
+  unnest(sensitivities) %>% 
+  unnest(results) %>% 
+  filter(year %in% c(2025, 2030, 2050)) %>% 
+  group_by(year) %>% 
+  summarise(quibble(forecast))
+  
+  print(stats)
+}
+
+#write.xlsx(stats, file = "02_output_plots_new/stats_conventional_a10_without_SPB_.xlsx")
+```
+
+## Quantiles of Sensitivity Results (anticipation = 100)
+
+```{r, message = FALSE}
+for (r in c("Europe", "North America", "Global")){
+  
+  stats <- data.results %>% 
+  filter(region == r,
+         anticipation == 100) %>% 
+  select(!demand) %>% 
+  unnest(sensitivities) %>% 
+  unnest(results) %>% 
+  filter(year %in% c(2025, 2030, 2050)) %>% 
+  group_by(year) %>% 
+  summarise(quibble(forecast))
+  
+  print(stats)
+}
+
+#write.xlsx(stats, file = "02_output_plots_new/stats_conventional_a100_without_SPB_.xlsx")
+```
+
+##FIGURE 8: Unconventional growth sensitivity analysis of anticipation
+
+```{r}
+
+p1 <- plotProbabilisticFeasibilitySpace(
+  data.row = data.results.unconv %>%
+    filter(region == "Europe", anticipation == 0),
+  data.targets = data.targets,
+  colour = colours[2],
+  marginal.year = 2033,
+  title = "Europe, no anticipation",
+  zoom.panel = F
+)
+
+p2 <- plotProbabilisticFeasibilitySpace(
+  data.row = data.results.unconv %>%
+    filter(region == "North America", anticipation == 0),
+  data.targets = data.targets,
+  colour = colours[2],
+  marginal.year = 2033,
+  title = "North America, no anticipation",
+  zoom.panel = F
+)
+
+p3 <- plotProbabilisticFeasibilitySpace(
+  data.row = data.results.unconv %>%
+    filter(region == "Global", anticipation == 0),
+  data.targets = data.targets,
+  colour = colours[2],
+  marginal.year = 2033,
+  title = "Global, no anticipation",
+  zoom.panel = F
+)
+
+p4 <- plotProbabilisticFeasibilitySpace(
+  data.row = data.results.unconv %>%
+    filter(region == "Europe", anticipation == 10),
+  data.targets = data.targets,
+  colour = colours[2],
+  marginal.year = 2033,
+  title = "Europe, 10 years anticipation",
+  zoom.panel = F
+)
+
+p5 <- plotProbabilisticFeasibilitySpace(
+  data.row = data.results.unconv %>%
+    filter(region == "North America", anticipation == 10),
+  data.targets = data.targets,
+  colour = colours[2],
+  marginal.year = 2033,
+  title = "North America, 10 years anticipation",
+  zoom.panel = F
+)
+
+p6 <- plotProbabilisticFeasibilitySpace(
+  data.row = data.results.unconv %>%
+    filter(region == "Global", anticipation == 10),
+  data.targets = data.targets,
+  colour = colours[2],
+  marginal.year = 2033,
+  title = "Global, 10 years anticipation",
+  zoom.panel = F
+)
+
+p7 <- plotProbabilisticFeasibilitySpace(
+  data.row = data.results.unconv %>%
+    filter(region == "Europe", anticipation == 100),
+  data.targets = data.targets,
+  colour = colours[2],
+  marginal.year = 2033,
+  title = "Europe, full anticipation",
+  zoom.panel = F
+)
+
+p8 <- plotProbabilisticFeasibilitySpace(
+  data.row = data.results.unconv %>%
+    filter(region == "North America", anticipation == 100),
+  data.targets = data.targets,
+  colour = colours[2],
+  marginal.year = 2033,
+  title = "North America, full anticipation",
+  zoom.panel = F
+)
+
+p9 <- plotProbabilisticFeasibilitySpace(
+  data.row = data.results.unconv %>%
+    filter(region == "Global", anticipation == 100),
+  data.targets = data.targets,
+  colour = colours[2],
+  marginal.year = 2033,
+  title = "Global, full anticipation",
+  zoom.panel = F
+)
+
+p.legend <- p1[[2]]
+
+p.plots <- plot_grid(p1[[1]], p2[[1]],p3[[1]],
+                     p4[[1]], p5[[1]],p6[[1]],
+                     p7[[1]], p8[[1]],p9[[1]],
+                     ncol = 3,
+                     rel_widths = c(1, 1),
+                     labels = "auto",
+                     label_size = font.size)
+
+p <- plot_grid(p.plots,
+               NULL,
+               p.legend,
+               ncol = 3,
+               rel_widths = c(1, 0.05, 0.15))
+
+print(p)
+ggsave(paste0(path.output, "FIG08_Sensitivity_Anticipation_Unconventional_Standard.jpg"),
+       width = 18, height = 18, units = "cm", bg = "white")
+```
+
+## Quantiles of Sensitivity Results (anticipation = 5)
+
+```{r, message = FALSE}
+for (r in c("Europe", "North America", "Global")){
+  
+  stats <- data.results.unconv %>% 
+  filter(region == r,
+         anticipation == 5) %>% 
+  select(!demand) %>% 
+  unnest(sensitivities) %>% 
+  unnest(results) %>% 
+  filter(year %in% c(2025, 2030, 2050)) %>% 
+  group_by(year) %>% 
+  summarise(quibble(forecast))
+  
+  print(stats)
+}
+
+#write.xlsx(stats, file = "02_output_plots_new/stats_unconventional_a5_without_SPB_.xlsx")
+```
+
+## Quantiles of Sensitivity Results (anticipation = 10)
+
+```{r, message = FALSE}
+for (r in c("Europe", "North America", "Global")){
+  
+  stats <- data.results.unconv %>% 
+  filter(region == r,
+         anticipation == 10) %>% 
+  select(!demand) %>% 
+  unnest(sensitivities) %>% 
+  unnest(results) %>% 
+  filter(year %in% c(2025, 2030, 2050)) %>% 
+  group_by(year) %>% 
+  summarise(quibble(forecast))
+  
+  print(stats)
+}
+
+#write.xlsx(stats, file = "02_output_plots_new/stats_unconventional_a10_without_SPB_.xlsx")
+```
+
+## Quantiles of Sensitivity Results (anticipation = 100)
+
+```{r, message = FALSE}
+for (r in c("Europe", "North America", "Global")){
+  
+  stats <- data.results.unconv %>% 
+  filter(region == r,
+         anticipation == 100) %>% 
+  select(!demand) %>% 
+  unnest(sensitivities) %>% 
+  unnest(results) %>% 
+  filter(year %in% c(2025, 2030, 2050)) %>% 
+  group_by(year) %>% 
+  summarise(quibble(forecast))
+  
+  print(stats)
+}
+
+#write.xlsx(stats, file = "02_output_plots_new/stats_unconventional_a100_without_SPB_.xlsx")
+```
+
+##FIGURE 9: Conservative growth sensitivity analysis of anticipation
+
+```{r}
+p1 <- plotProbabilisticFeasibilitySpace(
+  data.row = data.results.conserv %>%
+    filter(region == "Europe", anticipation == 0),
+  data.targets = data.targets,
+  colour = colours[3],
+  marginal.year = 2045,
+  title = "Europe, no anticipation",
+  zoom.panel = F
+)
+
+p2 <- plotProbabilisticFeasibilitySpace(
+  data.row = data.results.conserv %>%
+    filter(region == "North America", anticipation == 0),
+  data.targets = data.targets,
+  colour = colours[3],
+  marginal.year = 2045,
+  title = "North America, no anticipation",
+  zoom.panel = F
+)
+
+p3 <- plotProbabilisticFeasibilitySpace(
+  data.row = data.results.conserv %>%
+    filter(region == "Global", anticipation == 0),
+  data.targets = data.targets,
+  colour = colours[3],
+  marginal.year = 2045,
+  title = "Global, no anticipation",
+  zoom.panel = F
+)
+
+p4 <- plotProbabilisticFeasibilitySpace(
+  data.row = data.results.conserv %>%
+    filter(region == "Europe", anticipation == 10),
+  data.targets = data.targets,
+  colour = colours[3],
+  marginal.year = 2045,
+  title = "Europe, 10 years anticipation",
+  zoom.panel = F
+)
+
+p5 <- plotProbabilisticFeasibilitySpace(
+  data.row = data.results.conserv %>%
+    filter(region == "North America", anticipation == 10),
+  data.targets = data.targets,
+  colour = colours[3],
+  marginal.year = 2045,
+  title = "North America, 10 years anticipation",
+  zoom.panel = F
+)
+
+p6 <- plotProbabilisticFeasibilitySpace(
+  data.row = data.results.conserv %>%
+    filter(region == "Global", anticipation == 10),
+  data.targets = data.targets,
+  colour = colours[3],
+  marginal.year = 2045,
+  title = "Global, 10 years anticipation",
+  zoom.panel = F
+)
+
+p7 <- plotProbabilisticFeasibilitySpace(
+  data.row = data.results.conserv %>%
+    filter(region == "Europe", anticipation == 100),
+  data.targets = data.targets,
+  colour = colours[3],
+  marginal.year = 2045,
+  title = "Europe, full anticipation",
+  zoom.panel = F
+)
+
+p8 <- plotProbabilisticFeasibilitySpace(
+  data.row = data.results.conserv %>%
+    filter(region == "North America", anticipation == 100),
+  data.targets = data.targets,
+  colour = colours[3],
+  marginal.year = 2045,
+  title = "North America, full anticipation",
+  zoom.panel = F
+)
+
+p9 <- plotProbabilisticFeasibilitySpace(
+  data.row = data.results.conserv %>%
+    filter(region == "Global", anticipation == 100),
+  data.targets = data.targets,
+  colour = colours[3],
+  marginal.year = 2045,
+  title = "Global, full anticipation",
+  zoom.panel = F
+)
+
+p.legend <- p1[[2]]
+
+p.plots <- plot_grid(p1[[1]], p2[[1]],p3[[1]],
+                     p4[[1]], p5[[1]],p6[[1]],
+                     p7[[1]], p8[[1]],p9[[1]],
+                     ncol = 3,
+                     rel_widths = c(1, 1),
+                     labels = "auto",
+                     label_size = font.size)
+
+p <- plot_grid(p.plots,
+               NULL,
+               p.legend,
+               ncol = 3,
+               rel_widths = c(1, 0.05, 0.15))
+
+print(p)
+ggsave(paste0(path.output, "FIG09_Sensitivity_Anticipation_Conservative_Standard.jpg"),
+       width = 18, height = 18, units = "cm", bg = "white")
+```
+
+## Quantiles of Sensitivity Results (anticipation = 5)
+
+```{r, message = FALSE}
+for (r in c("Europe", "North America", "Global")){
+  
+  stats <- data.results.conserv %>% 
+  filter(region == r,
+         anticipation == 5) %>% 
+  select(!demand) %>% 
+  unnest(sensitivities) %>% 
+  unnest(results) %>% 
+  filter(year %in% c(2025, 2030, 2050)) %>% 
+  group_by(year) %>% 
+  summarise(quibble(forecast))
+  
+  print(stats)
+}
+
+#write.xlsx(stats, file = "02_output_plots_new/stats_conservative_a5_without_SPB_.xlsx")
+```
+
+## Quantiles of Sensitivity Results (anticipation = 10)
+
+```{r, message = FALSE}
+for (r in c("Europe", "North America", "Global")){
+  
+  stats <- data.results.conserv %>% 
+  filter(region == r,
+         anticipation == 10) %>% 
+  select(!demand) %>% 
+  unnest(sensitivities) %>% 
+  unnest(results) %>% 
+  filter(year %in% c(2025, 2030, 2050)) %>% 
+  group_by(year) %>% 
+  summarise(quibble(forecast))
+  
+  print(stats)
+}
+
+#write.xlsx(stats, file = "02_output_plots_new/stats_conservative_a10_without_SPB_.xlsx")
+```
+
+## Quantiles of Sensitivity Results (anticipation = 100)
+
+```{r, message = FALSE}
+for (r in c("Europe", "North America", "Global")){
+  
+  stats <- data.results.conserv %>% 
+  filter(region == r,
+         anticipation == 100) %>% 
+  select(!demand) %>% 
+  unnest(sensitivities) %>% 
+  unnest(results) %>% 
+  filter(year %in% c(2025, 2030, 2050)) %>% 
+  group_by(year) %>% 
+  summarise(quibble(forecast))
+  
+  print(stats)
+}
+
+#write.xlsx(stats, file = "02_output_plots_new/stats_conservative_a100_without_SPB_.xlsx")
+```
+
+#FIGURE 10: Comparison with other DAC scenarios / targets (Boxplot)
+
+```{r}
+# Parameters
+plot.years <- c(2050)
+
+# Formation of the Europe Data
+read_scenario_data <- function(sheet, x_value) {
+    data <- read_xlsx("01_input_data_new/Boxplot_Excel.xlsx", sheet = sheet) %>%
+      select("2050") %>%  
+      pivot_longer(cols = `2050`, names_to = "year", values_to = "value") %>%
+    mutate(year = as.integer(year),
+           value = value * 1e6,
+           x = x_value) 
+  return(data)
+}
+
+#Europe
+#IPCC C1 Scenario 
+data.eu.c1 <- read_scenario_data("AR6 C1 (Europe)", 1)
+
+#IPCC C2 Scenario 
+data.eu.c2<- read_scenario_data("AR6 C2 (Europe)", 2)
+
+
+#Social Pull (Case 1)
+data.eu.pull1 <- read_scenario_data("Social Pull Europe (Case 1)", 6)
+
+#Social Pull (Case 2)
+data.eu.pull2 <- read_scenario_data("Social Pull Europe (Case 2)", 7)
+
+#Social Pull (Case 3)
+data.eu.pull3 <- read_scenario_data("Social Pull Europe (Case 3)", 8)
+
+#Social Push Back (Case 1)
+data.eu.pushback1 <- read_scenario_data("Social PBack Europe (Case 1)", 9)
+
+#Social Push Back  (Case 2)
+data.eu.pushback2 <- read_scenario_data("Social PBack Europe (Case 2)", 10)
+
+#Social Push Back  (Case 3)
+data.eu.pushback3 <- read_scenario_data("Social PBack Europe (Case 3) ", 11)
+
+
+# Adding Modelling results
+
+# Modelling results Europe: Conventional growth
+data.plot.conv.eu <- data.results %>% 
+  filter(region == "Europe",
+         anticipation == 5) %>% 
+  unnest(sensitivities) %>% 
+  select(!demand) %>% 
+  unnest(results) %>% 
+  # For plotting
+  filter(year %in% plot.years) %>% 
+  select(year, forecast) %>% 
+  rename(value = forecast) %>% 
+  mutate(x = 3, model = "Conventional Growth")
+
+# Modelling results Europe: Unconventional growth
+data.plot.unconv.eu <- data.results.unconv %>% 
+  filter(region == "Europe",
+         anticipation == 5) %>% 
+  unnest(sensitivities) %>% 
+  select(!demand) %>% 
+  unnest(results) %>% 
+  # For plotting
+  filter(year %in% plot.years) %>% 
+  select(year, forecast) %>% 
+  rename(value = forecast) %>% 
+  mutate(x = 4, model = "Unconventional Growth")
+
+# Modelling results Europe: Conservative growth
+data.plot.conserv.eu <- data.results.conserv %>% 
+  filter(region == "Europe",
+         anticipation == 5) %>% 
+  unnest(sensitivities) %>% 
+  select(!demand) %>% 
+  unnest(results) %>% 
+  # For plotting
+  filter(year %in% plot.years) %>% 
+  select(year, forecast) %>% 
+  rename(value = forecast) %>% 
+  mutate(x = 5, model = "Conservative Growth")
+
+
+data.plot.eu.c1 <- bind_rows(data.eu.c1)%>%
+                   mutate(model = "IPCC C1")
+data.plot.eu.c2 <- bind_rows(data.eu.c2)%>%
+                   mutate(model = "IPCC C2")
+
+data.plot.eu.pull1 <- bind_rows(data.eu.pull1)%>%
+                   mutate(model = "Case 1, social pull")
+
+data.plot.eu.pull2 <- bind_rows(data.eu.pull2)%>%
+                   mutate(model = "Case 2, social pull")
+
+data.plot.eu.pull3 <- bind_rows(data.eu.pull3)%>%
+                   mutate(model = "Case 3, social pull")
+
+
+data.plot.eu.pushback1 <- bind_rows(data.eu.pushback1)%>%
+                   mutate(model = "Case 1, social push back")
+
+data.plot.eu.pushback2 <- bind_rows(data.eu.pushback2)%>%
+                   mutate(model = "Case 2, social push back")
+
+data.plot.eu.pushback3 <- bind_rows(data.eu.pushback3)%>%
+                   mutate(model = "Case 3, social push back")
+
+# IAM scenarios
+data.plot.eu.scenarios <- bind_rows(data.plot.eu.c1,
+                                    data.plot.eu.c2
+                                    )
+# Social based Scenarios
+data.plot.eu.social <- bind_rows(data.plot.eu.pull1,
+                                  data.plot.eu.pull2,
+                                  data.plot.eu.pull3,
+                                  data.plot.eu.pushback1,
+                                  data.plot.eu.pushback2,
+                                  data.plot.eu.pushback3
+                                  )
+# Diffusion model
+data.plot.eu.model <- bind_rows(data.plot.conv.eu, data.plot.unconv.eu, data.plot.conserv.eu)
+
+# Others
+data.plot.points.eu <- tribble(~x, ~year, ~value, ~source,
+                              # 12, 2025, 0.5, "NZE (IPCC Ratio)",
+                              # 12, 2030, 5, "NZE (EU)",
+                               12, 2050, 152, "NZE (EU)",
+                               
+                             #  12, 2025, 0.15, "Moderate NZE (IPCC Ratio)",
+                             #  12, 2030, 2.50, "Moderate NZE (IPCC Ratio)",
+                               12, 2050, 76, "Moderate NZE (IPCC Ratio)",
+                               
+                             #  12, 2025, 0.08, "Unambitious NZE (IPCC Ratio)",
+                             #  12, 2030, 1.25, "Unambitious NZE (IPCC Ratio)",
+                               12, 2050, 38, "Unambitious NZE (IPCC Ratio)",
+                               
+                             #  12.5, 2025, 1.63, "Residual Emissions (IPCC C1)",
+                             #  12.5, 2030, 8.85, "Residual Emissions (IPCC C1)",
+                               13, 2050, 36.75, "Residual Emissions (IPCC C1)",
+                               
+                              # 12.5, 2025, 0.74, "Residual Emissions (IPCC C2)",
+                              # 12.5, 2030, 2.59, "Residual Emissions (IPCC C2)",
+                               13, 2050, 19.96, "Residual Emissions (IPCC C2)",
+                               
+                               #6.5, 2025, 2.25, "Residual Emissions (IPCC Approach C3, median) ",
+                               #6.5, 2030, 6.81, "Residual Emissions (IPCC Approach C3, median) ",
+                               #6.5, 2050, 33.54, "Residual Emissions (IPCC Approach C3, median) ",
+                               
+                               #6.5, 2025, 3.49, "Residual Emissions (IPCC Approach C4, median) ",
+                               #6.5, 2030, 5.66, "Residual Emissions (IPCC Approach C4, median) ",
+                               #6.5, 2050, 21.44, "Residual Emissions (IPCC Approach C4, median) ",
+                              ) %>%
+ mutate(value = value * 10^6)
+
+
+shapes.eu <- c("NZE (IPCC Ratio)" = 0,
+               "NZE (EU)" = 15,
+               "Moderate NZE (IPCC Ratio)" = 1,
+               "Unambitious NZE (IPCC Ratio)" = 2,
+               "Residual Emissions (IPCC C1)" = 5,
+               "Residual Emissions (IPCC C2)" = 18 
+               #"Residual Emissions (IPCC Approach C3, median)" = 18,
+               #"Residual Emissions (IPCC Approach C4, median)" = 20
+               )
+
+
+colours.model <- c("Conventional Growth" = colours[1],
+                   "Unconventional Growth" = colours[2],
+                   "Conservative Growth" = colours[3])
+
+colours.scenarios.eu <- c("IPCC C1" = colours[4]
+                          ,"IPCC C2" = colours[5] 
+                          #"IPCC C3" = colours[6],
+                          #"IPCC C4" = colours[7]
+                          )
+
+colours.social.eu <- c("Case 1, social pull" = colours[6],
+                       "Case 2, social pull" = colours[6],
+                       "Case 3, social pull" = colours[6],
+                       "Case 1, social push back" = colours[7],
+                       "Case 2, social push back" = colours[7], 
+                       "Case 3, social push back" = colours[7]
+                       )
+
+# Europe plot
+p1 <- ggplot() + 
+  geom_boxplot(data = data.plot.eu.scenarios,
+               mapping = aes(x = x, y = value, fill = factor(model)),
+              outlier.alpha = 0.3,
+               coef = 1E20) +
+  scale_fill_manual(
+    name = "IAM Scenarios",
+                    values = colours.scenarios.eu,
+                    guide = guide_legend(order = 1)
+                    ) + 
+  new_scale_fill() + 
+  geom_boxplot(data = data.plot.eu.model,
+               mapping = aes(x = x, y = value, fill = factor(model)),
+               outlier.alpha = 0.3,
+               coef = 1E20) +
+  scale_fill_manual(
+    name = "Probabilistic Diffusion Model",
+                    values = colours.model,
+                    guide = guide_legend(order = 2)
+                    ) + 
+ new_scale_fill() + 
+geom_boxplot(data = data.plot.eu.social,
+               mapping = aes(x = x, y = value, fill = factor(model)),
+               outlier.alpha = 0.3,
+               coef = 1E20) +
+scale_fill_manual(name = "Social Based Scenarios",
+                    values = colours.social.eu,
+                    guide = guide_legend(order = 3)) + 
+  geom_point(data = data.plot.points.eu,
+             mapping = aes(x = x, y = value, shape = source)) +
+  scale_shape_manual(
+    name = "Others",
+                     values = shapes.eu,
+                     guide = guide_legend(order = 4)
+    ) +
+  ggtitle("Europe") + 
+  scale_x_continuous(name = NULL, labels = NULL, breaks = NULL) + 
+  ylab(expression("DAC Capacity [MtCO"[2]*"]")) +
+  scale_y_continuous(labels = scales::label_number(scale = 1e-6)) +
+  facet_wrap(~year, ncol = 1,
+             scales = "free") +
+  theme(legend.position = "bottom",
+        legend.direction = "vertical",
+        plot.title = element_text(size = 7,
+                                  hjust = 0.5),
+        strip.background=element_rect(fill = "white"),
+        strip.text=element_text(face = "bold"))
+  
+
+#North America 
+
+# Formation of the NA Data
+read_scenario_data <- function(sheet, x_value) {
+    data <- read_xlsx("01_input_data_new/Boxplot_Excel.xlsx", sheet = sheet) %>%
+      select("2050") %>%  
+      pivot_longer(cols = `2050`, names_to = "year", values_to = "value") %>%
+    mutate(year = as.integer(year),
+           value = value * 1e6,
+           x = x_value) 
+  return(data)
+}
+
+#North America (with quantiles)
+
+#IPCC C1 Scenario 
+data.na.c1 <- read_scenario_data("AR6 C1 (NA)", 1)
+
+#IPCC C2 Scenario 
+data.na.c2<- read_scenario_data("AR6 C2 (NA)", 2)
+
+
+#Social based Capacity (Case 1)
+data.na.pull1 <- read_scenario_data("Social Pull NA (Case 1)", 6)
+
+#Social based Capacity (Case 2)
+data.na.pull2 <- read_scenario_data("Social Pull NA (Case 2)", 7)
+
+#Social based Capacity (Case 3)
+data.na.pull3 <- read_scenario_data("Social Pull NA (Case 3)", 8)
+
+#Social based Years (Case 1)
+data.na.pushback1 <- read_scenario_data("Social PBack NA (Case 1) ", 9)
+
+#Social based Years (Case 2)
+data.na.pushback2 <- read_scenario_data("Social PBack NA (Case 2)", 10)
+
+#Social based Years (Case 3)
+data.na.pushback3 <- read_scenario_data("Social PBack NA (Case 3) ", 11)
+
+
+# Modelling results North America: Conventional growth
+data.plot.conv.na <- data.results %>% 
+  filter(region == "North America",
+         anticipation == 5) %>% 
+  unnest(sensitivities) %>% 
+  select(!demand) %>% 
+  unnest(results) %>% 
+  # For plotting
+  filter(year %in% plot.years) %>% 
+  select(year, forecast) %>% 
+  rename(value = forecast) %>% 
+  mutate(x = 3,
+         model = "Conventional Growth")
+
+# Modelling results North America: Unconventional growth
+data.plot.unconv.na <- data.results.unconv %>% 
+  filter(region == "North America",
+         anticipation == 5) %>% 
+  unnest(sensitivities) %>% 
+  select(!demand) %>% 
+  unnest(results) %>% 
+  # For plotting
+  filter(year %in% plot.years) %>% 
+  select(year, forecast) %>% 
+  rename(value = forecast) %>% 
+  mutate(x = 4,
+         model = "Unconventional Growth")
+
+# Modelling results North America: Conservative growth
+data.plot.conserv.na <- data.results.conserv %>% 
+  filter(region == "North America",
+         anticipation == 5) %>% 
+  unnest(sensitivities) %>% 
+  select(!demand) %>% 
+  unnest(results) %>% 
+  # For plotting
+  filter(year %in% plot.years) %>% 
+  select(year, forecast) %>% 
+  rename(value = forecast) %>% 
+  mutate(x = 5, model = "Conservative Growth")
+
+data.plot.na.c1 <- bind_rows(data.na.c1)%>%
+                   mutate(model = "IPCC C1")
+data.plot.na.c2 <- bind_rows(data.na.c2)%>%
+                   mutate(model = "IPCC C2")
+
+data.plot.na.pull1 <- bind_rows(data.na.pull1)%>%
+                   mutate(model = "Case 1, social pull")
+
+data.plot.na.pull2 <- bind_rows(data.na.pull2)%>%
+                   mutate(model = "Case 2, social pull")
+
+data.plot.na.pull3 <- bind_rows(data.na.pull3)%>%
+                   mutate(model = "Case 3, social pull")
+
+
+data.plot.na.pushback1 <- bind_rows(data.na.pushback1)%>%
+                   mutate(model = "Case 1, social push back")
+
+data.plot.na.pushback2 <- bind_rows(data.na.pushback2)%>%
+                   mutate(model = "Case 2, social push back")
+
+data.plot.na.pushback3 <- bind_rows(data.na.pushback3)%>%
+                   mutate(model = "Case 3, social push back")
+
+# IAM scenarios
+data.plot.na.scenarios <- bind_rows(data.plot.na.c1,
+                                    data.plot.na.c2,
+                                    )
+# Social based Scenarios
+data.plot.na.social <- bind_rows(data.plot.na.pull1,
+                                  data.plot.na.pull2,
+                                  data.plot.na.pull3,
+                                  data.plot.na.pushback1,
+                                  data.plot.na.pushback2,
+                                  data.plot.na.pushback3
+                                  )
+
+# Diffusion model
+data.plot.na.model <- bind_rows(data.plot.conv.na, 
+                                data.plot.unconv.na, 
+                                data.plot.conserv.na)
+
+# Others
+data.plot.points.na <- tribble(~x, ~year, ~value, ~source,                               
+                              # 6, 2025, 1.0, "NZE (IEA)",
+                              # 6, 2030, 38.38, "NZE (IPCC Ratio)",
+                               12, 2050, 549.24, "NZE (IPCC Ratio)",
+                               
+                              # 6, 2025, 0.50, "Moderate NZE (IPCC Ratio)",
+                              # 6, 2030, 19.19, "Moderate NZE (IPCC Ratio)",
+                              12, 2050, 274.62, "Moderate NZE (IPCC Ratio)",
+                               
+                              # 6, 2025, 0.25, "Unambitious NZE (IPCC Ratio)",
+                             #  6, 2030, 9.60, "Unambitious NZE (IPCC Ratio)",
+                             12, 2050, 137.31, "Unambitious NZE (IPCC Ratio)",
+                               
+                              # 6.5, 2025, 3.28, "Residual Emissions (IPCC C1)",
+                              # 6.5, 2030, 13.27, "Residual Emissions (IPCC C1)",
+                               13, 2050, 43.49, "Residual Emissions (IPCC C1)",
+                               
+                              # 6.5, 2025, 0.99, "Residual Emissions (IPCC C2)",
+                               #6.5, 2030, 4.61, "Residual Emissions (IPCC C2)",
+                               13, 2050, 33.69, "Residual Emissions (IPCC C2)", 
+                              ) %>%
+ mutate(value = value * 10^6)
+
+shapes.na <- c("NZE (IPCC Ratio)" = 0,
+               "NZE (IEA)" = 15,
+               "Moderate NZE (IPCC Ratio)" = 1,
+               "Unambitious NZE (IPCC Ratio)" = 2,
+               "Residual Emissions (IPCC C1)" = 5,
+               "Residual Emissions (IPCC C2)" = 18)
+
+
+colours.model <- c("Conventional Growth" = colours[1],
+                   "Unconventional Growth" = colours[2],
+                   "Conservative Growth" = colours[3])
+colours.scenarios.na <- c("IPCC C1" = colours[4],
+                          "IPCC C2" = colours[5])
+
+
+colours.social.na <- c("Case 1, social pull" = colours[6],
+                       "Case 2, social pull" = colours[6],
+                       "Case 3, social pull" = colours[6],
+                       "Case 1, social push back" = colours[7],
+                       "Case 2, social push back" = colours[7], 
+                       "Case 3, social push back" = colours[7]
+                       )
+
+# North America plot
+p2 <- ggplot() + 
+  geom_boxplot(data = data.plot.na.scenarios,
+               mapping = aes(x = x, y = value, fill = factor(model)),
+               outlier.alpha = 0.3,
+               coef = 1E20) +
+  scale_fill_manual(
+    name = "IAM Scenarios",
+                    values = colours.scenarios.na,
+                    guide = guide_legend(order = 1)
+                    ) + 
+  new_scale_fill() + 
+  geom_boxplot(data = data.plot.na.model,
+               mapping = aes(x = x, y = value, fill = factor(model)),
+               outlier.alpha = 0.3,
+               coef = 1E20) +
+  scale_fill_manual(
+    name = "Probabilistic Diffusion Model",
+                    values = colours.model,
+                    guide = guide_legend(order = 2)
+                    ) + 
+ new_scale_fill() + 
+geom_boxplot(data = data.plot.na.social,
+               mapping = aes(x = x, y = value, fill = factor(model)),
+               outlier.alpha = 0.3,
+               coef = 1E20) +
+scale_fill_manual(name = "Social Based Scenarios",
+                    values = colours.social.na,
+                    guide = guide_legend(order = 3)) + 
+  geom_point(data = data.plot.points.na,
+             mapping = aes(x = x, y = value, shape = source)) +
+  scale_shape_manual(
+    name = "Others",
+                     values = shapes.na,
+                     guide = guide_legend(order = 4)
+    ) +
+  ggtitle("North America") + 
+  scale_x_continuous(name = NULL, labels = NULL, breaks = NULL) + 
+  ylab(expression("DAC Capacity [MtCO"[2]*"]")) +
+  scale_y_continuous(labels = scales::label_number(scale = 1e-6)) +
+  facet_wrap(~year, ncol = 1,
+             scales = "free") +
+  theme(legend.position = "bottom",
+        legend.direction = "vertical",
+        plot.title = element_text(size = 7,
+                                  hjust = 0.5),
+        strip.background=element_rect(fill = "white"),
+        strip.text=element_text(face = "bold"))
+
+
+#Global
+
+# Formation of the Global Data
+read_scenario_data <- function(sheet, x_value) {
+    data <- read_xlsx("01_input_data_new/Boxplot_Excel.xlsx", sheet = sheet) %>%
+      select("2050") %>%  
+      pivot_longer(cols = `2050`, names_to = "year", values_to = "value") %>%
+    mutate(year = as.integer(year),
+           value = value * 1e6,
+           x = x_value) 
+  return(data)
+}
+
+#Global
+#IPCC C1 Scenario 
+data.glob.c1 <- read_scenario_data("AR6 C1 (Global)", 1)
+
+#IPCC C2 Scenario 
+data.glob.c2<- read_scenario_data("AR6 C2 (Global)", 2)
+
+
+#Social based Capacity (Case 1)
+data.glob.pull1 <- read_scenario_data("Social Pull Global (Case 1)", 6)
+
+#Social based Capacity (Case 2)
+data.glob.pull2 <- read_scenario_data("Social Pull Global (Case 2)", 7)
+
+#Social based Capacity (Case 3)
+data.glob.pull3 <- read_scenario_data("Social Pull Global (Case 3)", 8)
+
+#Social based Years (Case 1)
+data.glob.pushback1 <- read_scenario_data("Social PBack Global (Case 1)", 9)
+
+#Social based Years (Case 2)
+data.glob.pushback2 <- read_scenario_data("Social PBack Global (Case 2) ", 10)
+
+#Social based Years (Case 3)
+data.glob.pushback3 <- read_scenario_data("Social PBack Global (Case 3)", 11)
+
+# Modelling results Global: Conventional growth
+data.plot.conv.glob <- data.results %>% 
+  filter(region == "Global",
+         anticipation == 5) %>% 
+  unnest(sensitivities) %>% 
+  select(!demand) %>% 
+  unnest(results) %>% 
+  # For plotting
+  filter(year %in% plot.years) %>% 
+  select(year, forecast) %>% 
+  rename(value = forecast) %>% 
+  mutate(x = 3,
+         model = "Conventional")
+
+# Modelling results Global: Unconventional growth
+data.plot.unconv.glob <- data.results.unconv %>% 
+  filter(region == "Global",
+         anticipation == 5) %>% 
+  unnest(sensitivities) %>% 
+  select(!demand) %>% 
+  unnest(results) %>% 
+  # For plotting
+  filter(year %in% plot.years) %>% 
+  select(year, forecast) %>% 
+  rename(value = forecast) %>% 
+  mutate(x = 4,
+         model = "Unconventional")
+
+# Modelling results Global: Conservative growth
+data.plot.conserv.glob <- data.results.conserv %>% 
+  filter(region == "Global",
+         anticipation == 5) %>% 
+  unnest(sensitivities) %>% 
+  select(!demand) %>% 
+  unnest(results) %>% 
+  # For plotting
+  filter(year %in% plot.years) %>% 
+  select(year, forecast) %>% 
+  rename(value = forecast) %>% 
+  mutate(x = 5, model = "Conservative")
+
+
+data.plot.glob.c1 <- bind_rows(data.glob.c1)%>%
+                   mutate(model = "IPCC C1")
+
+data.plot.glob.c2 <- bind_rows(data.glob.c2)%>%                    
+                    mutate(model = "IPCC C2")
+
+#data.plot.glob.c3 <- bind_rows(data.glob.c3.median, data.glob.c3.high, data.glob.c3.low)%>%
+#                   mutate(model = "IPCC C3")
+#data.plot.glob.c4 <- bind_rows(data.glob.c4.median, data.glob.c4.high, data.glob.c4.low)%>%
+#                   mutate(model = "IPCC C4")
+
+data.plot.glob.pull1 <- bind_rows(data.glob.pull1)%>%
+                   mutate(model = "Case 1, social pull")
+
+data.plot.glob.pull2 <- bind_rows(data.glob.pull2)%>%
+                   mutate(model = "Case 2, social pull")
+
+data.plot.glob.pull3 <- bind_rows(data.glob.pull3)%>%
+                   mutate(model = "Case 3, social pull")
+
+
+data.plot.glob.pushback1 <- bind_rows(data.glob.pushback1)%>%
+                   mutate(model = "Case 1, social push back")
+
+data.plot.glob.pushback2 <- bind_rows(data.glob.pushback2)%>%
+                   mutate(model = "Case 2, social push back")
+
+data.plot.glob.pushback3 <- bind_rows(data.glob.pushback3)%>%
+                   mutate(model = "Case 3, social push back")
+# IAM scenarios
+data.plot.glob.scenarios <- bind_rows(#data.netzero.glob, 
+                                      data.plot.glob.c1,
+                                      data.plot.glob.c2,
+                                      #data.plot.glob.c3,
+                                      #data.plot.glob.c4
+                                    )
+
+# Social based Scenarios
+data.plot.glob.social <- bind_rows(data.plot.glob.pull1,
+                                  data.plot.glob.pull2,
+                                  data.plot.glob.pull3,
+                                  data.plot.glob.pushback1,
+                                  data.plot.glob.pushback2,
+                                  data.plot.glob.pushback3
+                                  )
+
+# Diffusion model
+data.plot.glob.model <- bind_rows(data.plot.conv.glob, 
+                                data.plot.unconv.glob, 
+                                data.plot.conserv.glob)
+
+# Others
+data.plot.points.glob <- tribble(~x, ~year, ~value, ~source,                              
+                              # 6, 2025, 14.17, "NZE (IPCC Ratio)",
+                              # 6, 2030, 85, "NZE (IEA)",
+                              12, 2050, 980, "NZE (IEA)",
+                               
+                              # 6, 2025, 7.09, "Moderate NZE (IPCC Ratio)",
+                              # 6, 2030, 42.50, "Moderate NZE (IPCC Ratio)",
+                              12, 2050, 490, "Moderate NZE (IPCC Ratio)",
+                               
+                              # 6, 2025, 3.54, "Unambitious NZE (IPCC Ratio)",
+                              # 6, 2030, 21.25, "Unambitious NZE (IPCC Ratio)",
+                              12, 2050, 245, "Unambitious NZE (IPCC Ratio)",
+                               
+                              # 6.5, 2025, 66.75, "Residual Emissions (IPCC C1)",
+                             #  6.5, 2030, 202.19, "Residual Emissions (IPCC C1)",
+                              13, 2050, 719.61, "Residual Emissions (IPCC C1)",
+                               
+                              # 6.5, 2025, 15.65, "Residual Emissions (IPCC C2)",
+                              # 6.5, 2030, 47.25, "Residual Emissions (IPCC C2)",
+                              13, 2050, 290.48, "Residual Emissions (IPCC C2)",
+                               
+                              ) %>%
+ mutate(value = value * 10^6)
+
+shapes.glob <- c("NZE (IPCC Ratio)" = 0,
+                 "NZE (IEA)" = 15,
+               "Moderate NZE (IPCC Ratio)" = 1,
+               "Unambitious NZE (IPCC Ratio)" = 2,
+               "Residual Emissions (IPCC C1)" = 5,
+               "Residual Emissions (IPCC C2)" = 18)
+
+
+
+colours.model <- c("Conventional" = colours[1],
+                   "Unconventional" = colours[2],
+                   "Conservative" = colours[3])
+colours.scenarios.glob <- c("IPCC C1" = colours[4],
+                            "IPCC C2" = colours [5])
+
+
+colours.social.glob <- c("Case 1, social pull" = colours[6],
+                       "Case 2, social pull" = colours[6],
+                       "Case 3, social pull" = colours[6],
+                       "Case 1, social push back" = colours[7],
+                       "Case 2, social push back" = colours[7], 
+                       "Case 3, social push back" = colours[7]
+                       )
+
+# Global plot
+p3 <- ggplot() + 
+  geom_boxplot(data = data.plot.glob.scenarios,
+               mapping = aes(x = x, y = value, fill = factor(model)),
+              outlier.alpha = 0.3,
+               coef = 1E20) +
+  scale_fill_manual(
+    name = "IAM Scenarios",
+                    values = colours.scenarios.glob,
+                    guide = guide_legend(order = 1)
+                    ) + 
+  new_scale_fill() + 
+  geom_boxplot(data = data.plot.glob.model,
+               mapping = aes(x = x, y = value, fill = factor(model)),
+               outlier.alpha = 0.3,
+               coef = 1E20) +
+  scale_fill_manual(
+    name = "Probabilistic Diffusion Model",
+                    values = colours.model,
+                    guide = guide_legend(order = 2)
+                    ) + 
+ new_scale_fill() + 
+geom_boxplot(data = data.plot.glob.social,
+               mapping = aes(x = x, y = value, fill = factor(model)),
+               outlier.alpha = 0.3,
+               coef = 1E20) +
+scale_fill_manual(name = "Social Based Scenarios",
+                    values = colours.social.glob,
+                    guide = guide_legend(order = 3)) + 
+  geom_point(data = data.plot.points.glob,
+             mapping = aes(x = x, y = value, shape = source)) +
+  scale_shape_manual(
+    name = "Others",
+                     values = shapes.glob,
+                     guide = guide_legend(order = 4)
+    ) +
+  ggtitle("Global") + 
+  scale_x_continuous(name = NULL, labels = NULL, breaks = NULL) + 
+  ylab(expression("DAC Capacity [MtCO"[2]*"]")) +
+  scale_y_continuous(labels = scales::label_number(scale = 1e-6)) +
+  facet_wrap(~year, ncol = 1,
+             scales = "free") +
+  theme(legend.position = "bottom",
+        legend.direction = "vertical",
+        plot.title = element_text(size = 7,
+                                  hjust = 0.5),
+        strip.background=element_rect(fill = "white"),
+        strip.text=element_text(face = "bold"))
+
+# TOTAL
+
+#Legend
+p1 <- p1 + theme(legend.text = element_text(size = 7),   
+               legend.title = element_text(size =7))   
+
+p2 <- p2 + theme(legend.text = element_text(size = 7),    
+               legend.title = element_text(size = 7))   
+
+p3 <- p3 + theme(legend.text = element_text(size = 7),    
+                 legend.title = element_text(size = 7))   
+
+p.plots <- plot_grid(p1 + theme(legend.position = "none"),
+                     p2 + theme(legend.position = "none"),
+                    p3 + theme(legend.position = "none"),
+                   ncol = 1)
+
+p <- plot_grid(
+  p1, 
+  p2, 
+  p3, 
+  nrow = 3, 
+  align = 'v' 
+)
+
+
+print(p)
+ggsave(paste0(path.output, "FIG10_comparison_scenarios.png"),
+       width = 21, height = 20, units = "cm", bg = "transparent")
+```
+
+##FIG 11: Conventional growth distributions for different slice lengths
+
+```{r}
+plots <- NULL
+for (r in 1:3){
+  
+  # Get values
+  growth.min <- data.input.param$growth.min[[r]]
+  growth.max <- 1.25  # Only for plotting
+  
+  data.plot.density <- NULL
+  for (l in unique(data.bp.fit$slice.length)){
+    
+    temp <- tibble(
+      growth = seq(growth.min, growth.max, length.out = 100),
+      growth.dens = dtruncnorm(
+        growth,
+        a = growth.min,
+        mean = data.bp.fit %>%
+          filter(slice.length == l,
+                 region == regions.bp$name[r]) %>%
+          pull(b) %>%
+          mean(),
+        sd = data.bp.fit %>%
+          filter(slice.length == l,
+                 region == regions.bp$name[r]) %>%
+          pull(b) %>%
+          sd()
+      ),
+      slice.length = paste0(l, " years")
+    ) %>% 
+      order.levels(slice.length = c("5 years",
+                                    "6 years",
+                                    "7 years",
+                                    "8 years",
+                                    "9 years",
+                                    "10 years"))
+    
+    data.plot.density <- bind_rows(data.plot.density, temp)
+    
+  }
+  
+  
+  # Growth rate
+  p.growth <- ggplot() + 
+    # Distribution
+    geom_line(data = data.plot.density,
+              mapping = aes(x = 100*growth, y = growth.dens, color = slice.length)) +
+    scale_color_manual(name = "Slice length", values = c("#4D7DBF", "#3395AB","#818F42", "orange", "pink", "magenta", "#8C8C8C")) +
+    geom_area(data = data.plot.density,
+              mapping = aes(x = 100*growth, y = growth.dens, fill = slice.length),
+              position = "identity",
+              alpha = 0.05) +
+    scale_fill_npg(name = "Slice Length") +
+    xlab("Emergence Growth Rate [%/yr]") + 
+    ylab("Probability Density [yr]") +
+    ggtitle(regions.dac$name[[r]]) +
+    theme(# Only line for y axis
+          axis.text.y = element_blank(),
+          axis.ticks.y = element_blank(),
+          plot.title = element_text(size = 7,
+                                    hjust = 0.5,
+                                    face = "bold"))
+  plots <- append(plots, list(p.growth))
+
+}
+
+# Arrange plots
+p <- plot_grid(plots[[1]] + theme(legend.position = "none"),
+               plots[[2]] + theme(legend.position = "none"),
+               plots[[3]] + theme(legend.position = "none"),
+               get_legend(plots[[2]]),
+               nrow = 1,
+               rel_widths = c(1, 1, 1, 0.5),
+               labels = c("a", "b", "c"),
+               label_size = 7)
+
+print(p)
+ggsave(paste0(path.output, "FIG11_growth_different_slice_length.jpg"),
+       width = 24, height = 7, units = "cm", bg = "white")
+```
